@@ -19,6 +19,8 @@
       <nav class="nav">
         <button class="nav-item active" data-section="dashboard">Dashboard</button>
         <button class="nav-item" data-section="monitor">Live IDS Monitor</button>
+        <button class="nav-item" data-section="incidents">Events & Incidents</button>
+        <button class="nav-item" data-section="rules">Correlation Rules</button>
       </nav>
     </aside>
 
@@ -116,6 +118,96 @@
             <ul id="signatureList" class="metric-list"></ul>
           </div>
         </section>
+      </section>
+
+      <section class="panel" id="incidents" data-section="incidents">
+        <section class="panel-header">
+          <div>
+            <h3>Normalized Events</h3>
+            <p>Latest HCES events stored in MongoDB.</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refreshEventsBtn" class="ghost">Refresh</button>
+          </div>
+        </section>
+
+        <div class="split-grid">
+          <div class="dashboard-card">
+            <div class="table-header">
+              <h4>Events</h4>
+              <span id="eventCount" class="pill">0</span>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" id="eventsTable">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Severity</th>
+                    <th>Signature</th>
+                    <th>Source</th>
+                    <th>Destination</th>
+                    <th>Incident</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="dashboard-card">
+            <div class="table-header">
+              <h4>Incidents</h4>
+              <span id="incidentCount" class="pill">0</span>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" id="incidentsTable">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Category</th>
+                    <th>Last Seen</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="rules" data-section="rules">
+        <section class="panel-header">
+          <div>
+            <h3>Correlation Rule Set</h3>
+            <p>Edit and deploy rule updates without restarting the service.</p>
+          </div>
+          <div class="panel-actions">
+            <span id="rulesPath" class="pill"></span>
+            <button id="reloadRulesBtn" class="ghost">Reload</button>
+            <button id="formatRulesBtn" class="ghost">Format</button>
+            <button id="saveRulesBtn" class="primary">Save Rules</button>
+          </div>
+        </section>
+
+        <div class="rules-grid">
+          <div class="dashboard-card">
+            <div class="rules-editor">
+              <textarea id="rulesEditor" spellcheck="false"></textarea>
+            </div>
+            <div class="rules-status" id="rulesStatus">Ready.</div>
+          </div>
+          <div class="dashboard-card rules-guide">
+            <h4>Guidance</h4>
+            <ul>
+              <li>Keep rules as a JSON array or { "rules": [] }.</li>
+              <li>Use <strong>match</strong>, <strong>group_by</strong>, and <strong>threshold</strong> to define correlation.</li>
+              <li>Save to push updates to the correlation engine immediately.</li>
+            </ul>
+          </div>
+        </div>
       </section>
     </main>
   </div>

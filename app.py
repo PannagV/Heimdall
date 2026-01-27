@@ -1,5 +1,7 @@
+import json
 import threading
 from collections import deque
+from datetime import datetime, timezone
 from typing import Deque, Dict, Optional
 
 from flask import Flask, jsonify, render_template, request
@@ -64,6 +66,14 @@ def store_hces_event(event: Dict) -> None:
             events_collection.insert_one(correlated)
     except PyMongoError:
         pass
+
+
+def serialize_doc(doc: Dict) -> Dict:
+    if not doc:
+        return {}
+    doc = dict(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 @app.route("/")
@@ -136,6 +146,125 @@ def api_clear():
 @app.route("/api/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/events")
+def api_events():
+    if events_collection is None:
+        return jsonify({"events": []})
+    limit = request.args.get("limit", type=int, default=200)
+    limit = max(1, min(limit, 1000))
+    try:
+        with mongo_lock:
+            cursor = (
+                events_collection.find(
+                    {},
+                    {
+                        "_id": 0,
+                        "event_id": 1,
+                        "timestamp": 1,
+                        "event": 1,
+                        "source": 1,
+                        "destination": 1,
+                        "network": 1,
+                        "alert": 1,
+                        "incident": 1,
+                        "source_type": 1,
+                    },
+                )
+                .sort("timestamp", -1)
+                .limit(limit)
+            )
+            events = list(cursor)
+    except PyMongoError:
+        events = []
+    return jsonify({"events": events})
+
+
+@app.route("/api/incidents")
+def api_incidents():
+    if incidents_collection is None:
+        return jsonify({"incidents": []})
+    limit = request.args.get("limit", type=int, default=200)
+    status_filter = request.args.get("status")
+    limit = max(1, min(limit, 1000))
+    query = {}
+    if status_filter:
+        query["status"] = status_filter
+    try:
+        with incidents_lock:
+            cursor = (
+                incidents_collection.find(query, {"_id": 0})
+                .sort("last_seen", -1)
+                .limit(limit)
+            )
+            incidents = list(cursor)
+    except PyMongoError:
+        incidents = []
+    return jsonify({"incidents": incidents})
+
+
+@app.route("/api/incidents/<incident_id>/close", methods=["POST"])
+def api_close_incident(incident_id: str):
+    if incidents_collection is None:
+        return jsonify({"status": "error", "message": "incidents collection unavailable"}), 503
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        with incidents_lock:
+            result = incidents_collection.update_one(
+                {"incident_id": incident_id},
+                {"$set": {"status": "closed", "last_seen": now_iso}},
+            )
+        if result.matched_count == 0:
+            return jsonify({"status": "error", "message": "incident not found"}), 404
+    except PyMongoError:
+        return jsonify({"status": "error", "message": "failed to update incident"}), 500
+    return jsonify({"status": "closed", "incident_id": incident_id})
+
+
+@app.route("/api/rules", methods=["GET", "PUT"])
+def api_rules():
+    rules_path = DEFAULT_CONFIG["correlation_rules_path"]
+    if request.method == "GET":
+        try:
+            with open(rules_path, "r", encoding="utf-8") as handle:
+                raw = handle.read()
+        except Exception:
+            raw = "[]"
+        return jsonify({"path": rules_path, "raw": raw, "rules": correlation_engine.rules if correlation_engine else []})
+
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("raw")
+    rules = payload.get("rules")
+
+    if raw is None and rules is None:
+        return jsonify({"status": "error", "message": "missing rules payload"}), 400
+
+    if raw is None:
+        try:
+            raw = json.dumps(rules, indent=2)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "rules must be valid JSON"}), 400
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return jsonify({"status": "error", "message": "invalid JSON"}), 400
+
+    if not isinstance(parsed, list) and not (
+        isinstance(parsed, dict) and isinstance(parsed.get("rules"), list)
+    ):
+        return jsonify({"status": "error", "message": "rules must be a list or {rules: []}"}), 400
+
+    try:
+        with open(rules_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(parsed, indent=2))
+    except Exception:
+        return jsonify({"status": "error", "message": "failed to write rules"}), 500
+
+    if correlation_engine:
+        correlation_engine.rules = correlation_engine.load_rules()
+    return jsonify({"status": "updated", "path": rules_path})
 
 
 init_hces_validator()

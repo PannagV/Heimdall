@@ -5,7 +5,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from jsonschema import Draft7Validator
+try:
+    from jsonschema import Draft7Validator
+except ImportError:  # pragma: no cover - optional dependency
+    Draft7Validator = None  # type: ignore[assignment]
 
 from .config import DEFAULT_CONFIG
 
@@ -101,6 +104,9 @@ def load_hces_schema() -> Dict:
 def init_hces_validator() -> None:
     global HCES_SCHEMA, HCES_VALIDATOR
     HCES_SCHEMA = load_hces_schema()
+    if Draft7Validator is None:
+        HCES_VALIDATOR = None
+        return
     try:
         HCES_VALIDATOR = Draft7Validator(HCES_SCHEMA)
     except Exception:
