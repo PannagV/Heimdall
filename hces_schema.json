@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Heimdall Common Event Schema (HCES)",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "ingested_at",
+    "event",
+    "source_type",
+    "sensor",
+    "raw_event"
+  ],
+  "properties": {
+    "event_id": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "ingested_at": { "type": "string" },
+    "event": {
+      "type": "object",
+      "required": ["kind", "category", "type", "severity", "outcome"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["alert", "event", "metric"] },
+        "category": { "type": "array", "items": { "type": "string" } },
+        "type": { "type": "array", "items": { "type": "string" } },
+        "severity": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "outcome": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "source_type": { "type": "string" },
+    "sensor": {
+      "type": "object",
+      "required": ["id", "type", "hostname"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "hostname": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "ip": { "type": "string" },
+        "port": { "type": "integer" },
+        "mac": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "destination": {
+      "type": "object",
+      "properties": {
+        "ip": { "type": "string" },
+        "port": { "type": "integer" },
+        "mac": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "protocol": { "type": "string" },
+        "transport": { "type": "string" },
+        "direction": { "type": "string", "enum": ["inbound", "outbound", "lateral"] },
+        "bytes": { "type": "integer" },
+        "packets": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "alert": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "signature": { "type": "string" },
+        "category": { "type": "string" },
+        "severity": { "type": "integer" },
+        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "action": { "type": "string", "enum": ["allowed", "blocked", "alerted"] }
+      },
+      "additionalProperties": true
+    },
+    "threat": {
+      "type": "object",
+      "properties": {
+        "indicator": { "type": "string" },
+        "type": { "type": "string", "enum": ["ip", "domain", "hash"] },
+        "reputation": { "type": "string", "enum": ["benign", "suspicious", "malicious"] },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "user": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "id": { "type": "string" },
+        "role": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "file": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "hash": {
+          "type": "object",
+          "properties": {
+            "sha256": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "mime_type": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "incident": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "closed", "suppressed"] },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "first_seen": { "type": "string" },
+        "last_seen": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "attack": {
+      "type": "object",
+      "properties": {
+        "tactic": { "type": "string" },
+        "technique": { "type": "string" },
+        "technique_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "raw_event": {
+      "type": "object",
+      "required": ["source", "data"],
+      "properties": {
+        "source": { "type": "string" },
+        "data": {}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

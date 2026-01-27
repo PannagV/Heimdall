@@ -80,14 +80,28 @@ async function fetchInterfaces() {
   }
 }
 
+function formatEndpoint(endpoint) {
+  if (!endpoint) return '';
+  const ip = endpoint.ip || '';
+  const port = endpoint.port !== null && endpoint.port !== undefined ? `:${endpoint.port}` : '';
+  return `${ip}${port}`.trim();
+}
+
 function formatAlert(alert) {
   const lines = [];
-  if (alert.signature) lines.push(alert.signature);
-  if (alert.classification) lines.push(alert.classification);
-  if (alert.priority !== null && alert.priority !== undefined) lines.push(`Priority: ${alert.priority}`);
-  if (alert.protocol) lines.push(`Protocol: ${alert.protocol}`);
-  if (alert.src || alert.dst) lines.push(`${alert.src || ''} -> ${alert.dst || ''}`.trim());
-  if (alert.timestamp) lines.push(alert.timestamp);
+  const signature = alert?.alert?.signature;
+  const classification = alert?.alert?.category;
+  const severity = alert?.event?.severity;
+  const protocol = alert?.network?.protocol || alert?.network?.transport;
+  const src = formatEndpoint(alert?.source);
+  const dst = formatEndpoint(alert?.destination);
+
+  if (signature) lines.push(signature);
+  if (classification) lines.push(classification);
+  if (severity !== null && severity !== undefined) lines.push(`Severity: ${severity}`);
+  if (protocol) lines.push(`Protocol: ${protocol}`);
+  if (src || dst) lines.push(`${src || ''} -> ${dst || ''}`.trim());
+  if (alert?.timestamp) lines.push(alert.timestamp);
   return lines.join(' • ');
 }
 
@@ -96,7 +110,7 @@ function addAlertCard(alert) {
   card.className = 'alert-card';
   const title = document.createElement('div');
   title.className = 'alert-title';
-  title.textContent = alert.signature || 'Heimdall Alert';
+  title.textContent = alert?.alert?.signature || 'Heimdall Alert';
 
   const meta = document.createElement('div');
   meta.className = 'alert-meta';
