@@ -2,15 +2,18 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request
+from jsonschema import Draft7Validator
 import numpy as np
 import pandas as pd
 from pymongo import MongoClient
@@ -20,10 +23,12 @@ app = Flask(__name__, template_folder="template")
 
 DEFAULT_CONFIG = {
     "suricata_config": os.environ.get("SURICATA_CONFIG", "/etc/suricata/suricata.yaml"),
-    "suricata_iface": os.environ.get("SURICATA_IFACE", "eth0"),
+    "suricata_iface": os.environ.get("SURICATA_IFACE", "enp0s3"),
     "suricata_log_dir": os.environ.get("SURICATA_LOG_DIR", "/var/log/suricata"),
     "suricata_log_type": os.environ.get("SURICATA_LOG_TYPE", "eve.json"),
     "mongo_uri": os.environ.get("MONGO_URI", "mongodb://localhost:27017"),
+    "sensor_id": os.environ.get("HEIMDALL_SENSOR_ID", "sensor-1"),
+    "sensor_hostname": os.environ.get("HEIMDALL_SENSOR_HOSTNAME", socket.gethostname()),
 }
 
 ALERT_BUFFER_SIZE = 500
@@ -42,40 +47,351 @@ mongo_lock = threading.Lock()
 log_type_lock = threading.Lock()
 current_log_type = DEFAULT_CONFIG["suricata_log_type"]
 
-ALERTS_VALIDATOR = {
+HCES_MONGO_VALIDATOR = {
     "$jsonSchema": {
         "bsonType": "object",
         "required": [
-            "type",
+            "event_id",
             "timestamp",
-            "signature",
-            "classification",
-            "priority",
-            "protocol",
-            "src",
-            "dst",
-            "gid",
-            "sid",
-            "rev",
+            "ingested_at",
+            "event",
+            "source_type",
+            "sensor",
+            "raw_event",
         ],
         "properties": {
-            "type": {"bsonType": "string"},
+            "event_id": {"bsonType": "string"},
             "timestamp": {"bsonType": "string"},
-            "signature": {"bsonType": ["string", "null"]},
-            "classification": {"bsonType": ["string", "null"]},
-            "priority": {"bsonType": ["int", "long", "null"]},
-            "protocol": {"bsonType": ["string", "null"]},
-            "src": {"bsonType": ["string", "null"]},
-            "dst": {"bsonType": ["string", "null"]},
-            "gid": {"bsonType": ["int", "long", "null"]},
-            "sid": {"bsonType": ["int", "long", "null"]},
-            "rev": {"bsonType": ["int", "long", "null"]},
-            "ingested_at": {"bsonType": "date"},
-            "alert_id": {"bsonType": ["int", "long", "null"]},
+            "ingested_at": {"bsonType": "string"},
+            "event": {
+                "bsonType": "object",
+                "required": ["kind", "category", "type", "severity", "outcome"],
+                "properties": {
+                    "kind": {"bsonType": "string"},
+                    "category": {"bsonType": "array"},
+                    "type": {"bsonType": "array"},
+                    "severity": {"bsonType": "int"},
+                    "outcome": {"bsonType": "string"},
+                },
+            },
+            "source_type": {"bsonType": "string"},
+            "sensor": {
+                "bsonType": "object",
+                "required": ["id", "type", "hostname"],
+                "properties": {
+                    "id": {"bsonType": "string"},
+                    "type": {"bsonType": "string"},
+                    "hostname": {"bsonType": "string"},
+                },
+            },
+            "source": {"bsonType": "object"},
+            "destination": {"bsonType": "object"},
+            "network": {"bsonType": "object"},
+            "alert": {"bsonType": "object"},
+            "incident": {"bsonType": "object"},
+            "raw_event": {
+                "bsonType": "object",
+                "required": ["source", "data"],
+                "properties": {
+                    "source": {"bsonType": "string"},
+                    "data": {},
+                },
+            },
         },
         "additionalProperties": True,
     }
 }
+
+HCES_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "hces_schema.json")
+HCES_SCHEMA: Dict = {}
+HCES_VALIDATOR: Optional[Draft7Validator] = None
+
+
+def load_hces_schema() -> Dict:
+    try:
+        with open(HCES_SCHEMA_PATH, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {
+            "type": "object",
+            "required": [
+                "event_id",
+                "timestamp",
+                "ingested_at",
+                "event",
+                "source_type",
+                "sensor",
+                "raw_event",
+            ],
+            "properties": {
+                "event_id": {"type": "string"},
+                "timestamp": {"type": "string"},
+                "ingested_at": {"type": "string"},
+                "event": {"type": "object"},
+                "source_type": {"type": "string"},
+                "sensor": {"type": "object"},
+                "raw_event": {"type": "object"},
+            },
+            "additionalProperties": True,
+        }
+
+
+def init_hces_validator() -> None:
+    global HCES_SCHEMA, HCES_VALIDATOR
+    HCES_SCHEMA = load_hces_schema()
+    try:
+        HCES_VALIDATOR = Draft7Validator(HCES_SCHEMA)
+    except Exception:
+        HCES_VALIDATOR = None
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_iso_timestamp(timestamp: Optional[str]) -> Optional[str]:
+    if not timestamp:
+        return None
+    ts = timestamp.strip()
+    if ts.endswith("Z"):
+        ts = ts.replace("Z", "+00:00")
+    tz_match = re.search(r"([+-]\d{2})(\d{2})$", ts)
+    if tz_match:
+        ts = ts[: tz_match.start()] + tz_match.group(1) + ":" + tz_match.group(2)
+    try:
+        parsed = datetime.fromisoformat(ts)
+        parsed_utc = parsed.astimezone(timezone.utc)
+        return parsed_utc.isoformat().replace("+00:00", "Z")
+    except Exception:
+        pass
+
+    for fmt in ("%m/%d/%Y-%H:%M:%S.%f", "%m/%d/%Y-%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc)
+            return parsed.isoformat().replace("+00:00", "Z")
+        except Exception:
+            continue
+
+    return timestamp
+
+
+def parse_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    if not value:
+        return None, None
+    if value.startswith("[") and "]" in value:
+        host, _, port_str = value.rpartition(":")
+        host = host.strip("[]")
+        if port_str.isdigit():
+            return host, int(port_str)
+        return value, None
+    if ":" in value:
+        host, port_str = value.rsplit(":", 1)
+        if port_str.isdigit():
+            return host, int(port_str)
+    return value, None
+
+
+def normalize_severity(suricata_severity: Optional[int]) -> int:
+    if suricata_severity == 1:
+        return 5
+    if suricata_severity == 2:
+        return 3
+    if suricata_severity == 3:
+        return 1
+    return 3
+
+
+def coerce_int(value: object) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def build_sensor_context() -> Dict:
+    return {
+        "id": DEFAULT_CONFIG["sensor_id"],
+        "type": "ids",
+        "hostname": DEFAULT_CONFIG["sensor_hostname"],
+    }
+
+
+def build_network_context(data: Dict) -> Dict:
+    source_ip = data.get("src_ip")
+    dest_ip = data.get("dest_ip")
+    source_port = coerce_int(data.get("src_port"))
+    dest_port = coerce_int(data.get("dest_port"))
+    source_mac = data.get("src_mac")
+    dest_mac = data.get("dest_mac")
+
+    network: Dict[str, object] = {}
+
+    protocol = (data.get("app_proto") or data.get("proto") or "").lower()
+    if protocol:
+        network["protocol"] = protocol
+
+    if protocol in ("tcp", "udp"):
+        network["transport"] = protocol
+
+    direction_map = {
+        "to_server": "inbound",
+        "to_client": "outbound",
+    }
+    direction = direction_map.get(data.get("direction"))
+    if direction:
+        network["direction"] = direction
+
+    flow = data.get("flow") or {}
+    bytes_total = None
+    packets_total = None
+    if isinstance(flow, dict):
+        bytes_server = flow.get("bytes_toserver")
+        bytes_client = flow.get("bytes_toclient")
+        if isinstance(bytes_server, int) and isinstance(bytes_client, int):
+            bytes_total = bytes_server + bytes_client
+        packets_server = flow.get("pkts_toserver")
+        packets_client = flow.get("pkts_toclient")
+        if isinstance(packets_server, int) and isinstance(packets_client, int):
+            packets_total = packets_server + packets_client
+
+    if isinstance(bytes_total, int):
+        network["bytes"] = bytes_total
+    if isinstance(packets_total, int):
+        network["packets"] = packets_total
+
+    source = None
+    if source_ip or source_port or source_mac:
+        source = {"ip": source_ip, "port": source_port, "mac": source_mac}
+        source = {k: v for k, v in source.items() if v is not None}
+
+    destination = None
+    if dest_ip or dest_port or dest_mac:
+        destination = {"ip": dest_ip, "port": dest_port, "mac": dest_mac}
+        destination = {k: v for k, v in destination.items() if v is not None}
+
+    context: Dict[str, object] = {}
+    if source:
+        context["source"] = source
+    if destination:
+        context["destination"] = destination
+    if network:
+        context["network"] = network
+    return context
+
+
+def validate_hces_event(event: Dict) -> bool:
+    if HCES_VALIDATOR is None:
+        return True
+    errors = sorted(HCES_VALIDATOR.iter_errors(event), key=lambda err: err.path)
+    return not errors
+
+
+def build_hces_base(
+    *,
+    timestamp: Optional[str],
+    kind: str,
+    category: List[str],
+    event_type: List[str],
+    severity: int,
+    outcome: str,
+    raw_data: object,
+) -> Dict:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "timestamp": normalize_iso_timestamp(timestamp) or utc_now_iso(),
+        "ingested_at": utc_now_iso(),
+        "event": {
+            "kind": kind,
+            "category": category,
+            "type": event_type,
+            "severity": severity,
+            "outcome": outcome,
+        },
+        "source_type": "suricata",
+        "sensor": build_sensor_context(),
+        "raw_event": {
+            "source": "suricata",
+            "data": raw_data,
+        },
+    }
+
+
+def build_hces_event_from_eve(data: Dict, raw_line: str) -> Dict:
+    event_type = data.get("event_type")
+    is_alert = event_type == "alert"
+    alert = data.get("alert") or {}
+    base = build_hces_base(
+        timestamp=data.get("timestamp"),
+        kind="alert" if is_alert else "event",
+        category=["intrusion", "network"] if is_alert else ["network"],
+        event_type=["ids"],
+        severity=normalize_severity(alert.get("severity") if is_alert else None),
+        outcome="unknown",
+        raw_data=data,
+    )
+
+    context = build_network_context(data)
+    base.update(context)
+
+    if is_alert:
+        alert_block = {
+            "id": alert.get("signature_id"),
+            "signature": alert.get("signature"),
+            "category": alert.get("category"),
+            "severity": alert.get("severity"),
+            "action": alert.get("action") or "alerted",
+        }
+        base["alert"] = {k: v for k, v in alert_block.items() if v is not None}
+
+    fileinfo = data.get("fileinfo") or {}
+    if isinstance(fileinfo, dict) and fileinfo:
+        file_block = {
+            "name": fileinfo.get("filename"),
+            "mime_type": fileinfo.get("mimetype"),
+            "hash": {"sha256": fileinfo.get("sha256")},
+        }
+        base["file"] = {
+            k: v for k, v in file_block.items() if v is not None and v != {}
+        }
+
+    return base
+
+
+def build_hces_event_from_fast(parsed: Dict, raw_line: str) -> Dict:
+    src_ip, src_port = parse_ip_port(parsed.get("src"))
+    dst_ip, dst_port = parse_ip_port(parsed.get("dst"))
+    base = build_hces_base(
+        timestamp=parsed.get("timestamp"),
+        kind="alert",
+        category=["intrusion", "network"],
+        event_type=["ids"],
+        severity=normalize_severity(parsed.get("priority")),
+        outcome="unknown",
+        raw_data=raw_line,
+    )
+    if src_ip or src_port:
+        base["source"] = {k: v for k, v in {"ip": src_ip, "port": src_port}.items() if v is not None}
+    if dst_ip or dst_port:
+        base["destination"] = {
+            k: v for k, v in {"ip": dst_ip, "port": dst_port}.items() if v is not None
+        }
+    proto = (parsed.get("protocol") or "").lower()
+    if proto:
+        base["network"] = {"protocol": proto, "transport": proto} if proto in ("tcp", "udp") else {"protocol": proto}
+
+    alert_block = {
+        "id": parsed.get("sid"),
+        "signature": parsed.get("signature"),
+        "category": parsed.get("classification"),
+        "severity": parsed.get("priority"),
+        "action": "alerted",
+    }
+    base["alert"] = {k: v for k, v in alert_block.items() if v is not None}
+    return base
 
 
 @dataclass
@@ -139,15 +455,17 @@ class LogTailer(threading.Thread):
                 time.sleep(0.5)
 
 
-def push_alert(alert: Dict) -> None:
+def push_alert(event: Dict) -> None:
     global alert_id
-    with alerts_lock:
-        alert_id += 1
-        alert["id"] = alert_id
-        alerts.append(alert)
+    is_alert = event.get("event", {}).get("kind") == "alert"
+    if is_alert:
+        with alerts_lock:
+            alert_id += 1
+            ui_event = dict(event)
+            ui_event["id"] = alert_id
+            alerts.append(ui_event)
 
-    if alert.get("type") == "eve":
-        store_eve_alert(alert)
+    store_hces_event(event)
 
 
 def init_mongo() -> None:
@@ -161,51 +479,55 @@ def init_mongo() -> None:
         return
 
     db = client["alerts"]
-    existing = list(db.list_collections(filter={"name": "alerts"}))
+    existing = list(db.list_collections(filter={"name": "events"}))
     if not existing:
         try:
             db.create_collection(
-                "alerts",
-                validator=ALERTS_VALIDATOR,
+                "events",
+                validator=HCES_MONGO_VALIDATOR,
                 validationLevel="moderate",
             )
         except PyMongoError:
             mongo_client = client
-            mongo_collection = db["alerts"]
+            mongo_collection = db["events"]
             return
     else:
         options = existing[0].get("options", {})
         validator = options.get("validator")
-        if validator != ALERTS_VALIDATOR:
-            pass
+        if validator != HCES_MONGO_VALIDATOR:
+            try:
+                db.command(
+                    "collMod",
+                    "events",
+                    validator=HCES_MONGO_VALIDATOR,
+                    validationLevel="moderate",
+                )
+            except PyMongoError:
+                pass
 
     mongo_client = client
-    mongo_collection = db["alerts"]
+    mongo_collection = db["events"]
+
+    try:
+        mongo_collection.create_index("timestamp")
+        mongo_collection.create_index("source.ip")
+        mongo_collection.create_index("destination.ip")
+        mongo_collection.create_index("event.severity")
+        mongo_collection.create_index("alert.id")
+        mongo_collection.create_index("incident.id")
+    except PyMongoError:
+        pass
 
 
-def store_eve_alert(alert: Dict) -> None:
+def store_hces_event(event: Dict) -> None:
     if mongo_collection is None:
         return
-
-    doc = {
-        "type": alert.get("type"),
-        "timestamp": alert.get("timestamp"),
-        "signature": alert.get("signature"),
-        "classification": alert.get("classification"),
-        "priority": alert.get("priority"),
-        "protocol": alert.get("protocol"),
-        "src": alert.get("src"),
-        "dst": alert.get("dst"),
-        "gid": alert.get("gid"),
-        "sid": alert.get("sid"),
-        "rev": alert.get("rev"),
-        "alert_id": alert.get("id"),
-        "ingested_at": datetime.now(timezone.utc),
-    }
+    if not validate_hces_event(event):
+        return
 
     try:
         with mongo_lock:
-            mongo_collection.insert_one(doc)
+            mongo_collection.insert_one(event)
     except PyMongoError:
         pass
 
@@ -218,11 +540,18 @@ def parse_fast_line(line: str) -> Optional[Dict]:
     )
     match = pattern.match(line)
     if not match:
-        return {"raw": line, "type": "fast"}
+        return build_hces_base(
+            timestamp=utc_now_iso(),
+            kind="event",
+            category=["network"],
+            event_type=["ids"],
+            severity=3,
+            outcome="unknown",
+            raw_data=line,
+        )
 
     data = match.groupdict()
-    return {
-        "type": "fast",
+    parsed = {
         "timestamp": data.get("ts"),
         "signature": data.get("msg"),
         "classification": data.get("classification"),
@@ -234,31 +563,24 @@ def parse_fast_line(line: str) -> Optional[Dict]:
         "sid": int(data.get("sid")) if data.get("sid") else None,
         "rev": int(data.get("rev")) if data.get("rev") else None,
     }
+    return build_hces_event_from_fast(parsed, line)
 
 
 def parse_eve_line(line: str) -> Optional[Dict]:
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        return {"raw": line, "type": "eve"}
+        return build_hces_base(
+            timestamp=utc_now_iso(),
+            kind="event",
+            category=["network"],
+            event_type=["ids"],
+            severity=3,
+            outcome="unknown",
+            raw_data=line,
+        )
 
-    if data.get("event_type") != "alert":
-        return None
-
-    alert = data.get("alert", {})
-    return {
-        "type": "eve",
-        "timestamp": data.get("timestamp"),
-        "signature": alert.get("signature"),
-        "classification": alert.get("category"),
-        "priority": alert.get("severity"),
-        "protocol": data.get("proto"),
-        "src": f"{data.get('src_ip')}:{data.get('src_port')}" if data.get("src_ip") else None,
-        "dst": f"{data.get('dest_ip')}:{data.get('dest_port')}" if data.get("dest_ip") else None,
-        "gid": alert.get("gid"),
-        "sid": alert.get("signature_id"),
-        "rev": alert.get("rev"),
-    }
+    return build_hces_event_from_eve(data, line)
 
 
 def list_interfaces() -> List[str]:
@@ -395,7 +717,8 @@ def api_metrics():
         )
 
     now = datetime.now(timezone.utc)
-    last_24h = now - timedelta(hours=24)
+    last_24h_iso = (now - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+    base_match = {"event.kind": "alert"}
 
     def aggregate_list(pipeline):
         try:
@@ -404,37 +727,44 @@ def api_metrics():
         except PyMongoError:
             return []
 
-    total_count = aggregate_list([{"$count": "count"}])
+    total_count = aggregate_list([{"$match": base_match}, {"$count": "count"}])
     last_24h_count = aggregate_list(
-        [{"$match": {"ingested_at": {"$gte": last_24h}}}, {"$count": "count"}]
+        [
+            {"$match": {**base_match, "ingested_at": {"$gte": last_24h_iso}}},
+            {"$count": "count"},
+        ]
     )
     critical_count = aggregate_list(
-        [{"$match": {"priority": 1}}, {"$count": "count"}]
+        [{"$match": {**base_match, "event.severity": {"$gte": 4}}}, {"$count": "count"}]
     )
 
     by_priority = aggregate_list(
         [
-            {"$group": {"_id": "$priority", "count": {"$sum": 1}}},
-            {"$sort": {"_id": 1}},
+            {"$match": base_match},
+            {"$group": {"_id": "$event.severity", "count": {"$sum": 1}}},
+            {"$sort": {"_id": -1}},
         ]
     )
     by_classification = aggregate_list(
         [
-            {"$group": {"_id": "$classification", "count": {"$sum": 1}}},
+            {"$match": base_match},
+            {"$group": {"_id": "$alert.category", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
             {"$limit": 5},
         ]
     )
     by_protocol = aggregate_list(
         [
-            {"$group": {"_id": "$protocol", "count": {"$sum": 1}}},
+            {"$match": base_match},
+            {"$group": {"_id": "$network.protocol", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
             {"$limit": 5},
         ]
     )
     top_signatures = aggregate_list(
         [
-            {"$group": {"_id": "$signature", "count": {"$sum": 1}}},
+            {"$match": base_match},
+            {"$group": {"_id": "$alert.signature", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
             {"$limit": 5},
         ]
@@ -450,10 +780,15 @@ def api_metrics():
 
     hourly = aggregate_list(
         [
-            {"$match": {"ingested_at": {"$gte": last_24h}}},
+            {"$match": {**base_match, "ingested_at": {"$gte": last_24h_iso}}},
             {
                 "$project": {
-                    "hour": {"$dateTrunc": {"date": "$ingested_at", "unit": "hour"}}
+                    "hour": {
+                        "$dateTrunc": {
+                            "date": {"$dateFromString": {"dateString": "$ingested_at"}},
+                            "unit": "hour",
+                        }
+                    }
                 }
             },
             {"$group": {"_id": "$hour", "count": {"$sum": 1}}},
@@ -506,11 +841,12 @@ def health():
     return jsonify({"status": "ok"})
 
 
+init_hces_validator()
+init_mongo()
+
 log_dir = DEFAULT_CONFIG["suricata_log_dir"]
 tailer = LogTailer(log_dir, current_log_type)
 tailer.start()
-
-init_mongo()
 
 
 if __name__ == "__main__":
