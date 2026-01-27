@@ -1,0 +1,37 @@
+[
+  {
+    "rule_id": "CORR-001",
+    "name": "Repeated Signature from Source",
+    "enabled": true,
+    "match": {
+      "event.category": "network",
+      "event.kind": "alert"
+    },
+    "group_by": ["source.ip", "alert.id"],
+    "threshold": {
+      "count": 5,
+      "window_minutes": 10
+    },
+    "incident": {
+      "priority": "medium",
+      "category": "reconnaissance"
+    }
+  },
+  {
+    "rule_id": "CORR-002",
+    "name": "Same Source Multiple Alerts",
+    "enabled": true,
+    "match": {
+      "event.kind": "alert"
+    },
+    "group_by": ["source.ip"],
+    "threshold": {
+      "count": 10,
+      "window_minutes": 15
+    },
+    "incident": {
+      "priority": "high",
+      "category": "intrusion"
+    }
+  }
+]
