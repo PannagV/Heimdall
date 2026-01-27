@@ -26,6 +26,19 @@ const priorityChartEl = document.getElementById('priorityChart');
 const classificationChartEl = document.getElementById('classificationChart');
 const hourlyChartEl = document.getElementById('hourlyChart');
 
+const eventsTableBody = document.querySelector('#eventsTable tbody');
+const incidentsTableBody = document.querySelector('#incidentsTable tbody');
+const eventCountEl = document.getElementById('eventCount');
+const incidentCountEl = document.getElementById('incidentCount');
+const refreshEventsBtn = document.getElementById('refreshEventsBtn');
+
+const rulesEditor = document.getElementById('rulesEditor');
+const rulesPathEl = document.getElementById('rulesPath');
+const rulesStatusEl = document.getElementById('rulesStatus');
+const reloadRulesBtn = document.getElementById('reloadRulesBtn');
+const formatRulesBtn = document.getElementById('formatRulesBtn');
+const saveRulesBtn = document.getElementById('saveRulesBtn');
+
 let lastAlertId = 0;
 let alertCount = 0;
 
@@ -43,6 +56,14 @@ const sectionCopy = {
   dashboard: {
     title: 'Alert Dashboard',
     subtitle: 'Metrics from the stored security alerts',
+  },
+  incidents: {
+    title: 'Events & Incidents',
+    subtitle: 'Inspect normalized events and manage active incidents',
+  },
+  rules: {
+    title: 'Correlation Rules',
+    subtitle: 'Review and update correlation rules in real time',
   },
 };
 
@@ -133,6 +154,161 @@ function setActiveSection(section) {
   if (copy) {
     sectionTitle.textContent = copy.title;
     sectionSubtitle.textContent = copy.subtitle;
+  }
+
+  if (section === 'incidents') {
+    fetchEvents();
+    fetchIncidents();
+  }
+  if (section === 'rules') {
+    fetchRules();
+  }
+}
+
+function formatIncidentBadge(incident) {
+  if (!incident) return '-';
+  return incident.id || incident.incident_id || '-';
+}
+
+function renderEvents(events) {
+  if (!eventsTableBody) return;
+  eventsTableBody.innerHTML = '';
+  eventCountEl.textContent = events.length;
+  if (!events.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'No events available.';
+    row.appendChild(cell);
+    eventsTableBody.appendChild(row);
+    return;
+  }
+
+  events.forEach(event => {
+    const row = document.createElement('tr');
+    const source = formatEndpoint(event.source);
+    const destination = formatEndpoint(event.destination);
+
+    row.innerHTML = `
+      <td>${event.timestamp || '-'}</td>
+      <td>${event?.event?.severity ?? '-'}</td>
+      <td>${event?.alert?.signature || '-'}</td>
+      <td>${source || '-'}</td>
+      <td>${destination || '-'}</td>
+      <td>${formatIncidentBadge(event.incident)}</td>
+    `;
+    eventsTableBody.appendChild(row);
+  });
+}
+
+function renderIncidents(incidents) {
+  if (!incidentsTableBody) return;
+  incidentsTableBody.innerHTML = '';
+  incidentCountEl.textContent = incidents.length;
+  if (!incidents.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'No incidents available.';
+    row.appendChild(cell);
+    incidentsTableBody.appendChild(row);
+    return;
+  }
+
+  incidents.forEach(incident => {
+    const row = document.createElement('tr');
+    const isClosed = incident.status === 'closed';
+    row.innerHTML = `
+      <td>${incident.incident_id || '-'}</td>
+      <td>${incident.status || '-'}</td>
+      <td>${incident.priority || '-'}</td>
+      <td>${incident.category || '-'}</td>
+      <td>${incident.last_seen || '-'}</td>
+      <td>
+        <button class="ghost" data-incident="${incident.incident_id}" ${isClosed ? 'disabled' : ''}>
+          ${isClosed ? 'Closed' : 'Close'}
+        </button>
+      </td>
+    `;
+    incidentsTableBody.appendChild(row);
+  });
+}
+
+async function fetchEvents() {
+  try {
+    const res = await fetch('/api/events?limit=200');
+    const data = await res.json();
+    renderEvents(data.events || []);
+  } catch (err) {
+    // ignore
+  }
+}
+
+async function fetchIncidents() {
+  try {
+    const res = await fetch('/api/incidents?limit=200');
+    const data = await res.json();
+    renderIncidents(data.incidents || []);
+  } catch (err) {
+    // ignore
+  }
+}
+
+async function closeIncident(incidentId) {
+  if (!incidentId) return;
+  try {
+    await fetch(`/api/incidents/${incidentId}/close`, { method: 'POST' });
+    fetchIncidents();
+  } catch (err) {
+    // ignore
+  }
+}
+
+function setRulesStatus(message, isError = false) {
+  if (!rulesStatusEl) return;
+  rulesStatusEl.textContent = message;
+  rulesStatusEl.style.color = isError ? '#ffb3b3' : '#cfcfcf';
+}
+
+async function fetchRules() {
+  try {
+    const res = await fetch('/api/rules');
+    const data = await res.json();
+    if (rulesPathEl) rulesPathEl.textContent = data.path || 'Rules file';
+    if (rulesEditor) rulesEditor.value = data.raw || '';
+    setRulesStatus('Loaded current rules.');
+  } catch (err) {
+    setRulesStatus('Failed to load rules.', true);
+  }
+}
+
+function formatRules() {
+  if (!rulesEditor) return;
+  try {
+    const parsed = JSON.parse(rulesEditor.value || '[]');
+    rulesEditor.value = JSON.stringify(parsed, null, 2);
+    setRulesStatus('Formatted JSON successfully.');
+  } catch (err) {
+    setRulesStatus('Invalid JSON. Cannot format.', true);
+  }
+}
+
+async function saveRules() {
+  if (!rulesEditor) return;
+  try {
+    const res = await fetch('/api/rules', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw: rulesEditor.value }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setRulesStatus('Rules saved and reloaded.');
+    } else {
+      setRulesStatus(data.message || 'Failed to save rules.', true);
+    }
+  } catch (err) {
+    setRulesStatus('Failed to save rules.', true);
   }
 }
 
@@ -343,6 +519,26 @@ navItems.forEach(item => {
   });
 });
 
+if (refreshEventsBtn) {
+  refreshEventsBtn.addEventListener('click', () => {
+    fetchEvents();
+    fetchIncidents();
+  });
+}
+
+if (incidentsTableBody) {
+  incidentsTableBody.addEventListener('click', event => {
+    const button = event.target.closest('button[data-incident]');
+    if (!button) return;
+    const incidentId = button.dataset.incident;
+    closeIncident(incidentId);
+  });
+}
+
+if (reloadRulesBtn) reloadRulesBtn.addEventListener('click', fetchRules);
+if (formatRulesBtn) formatRulesBtn.addEventListener('click', formatRules);
+if (saveRulesBtn) saveRulesBtn.addEventListener('click', saveRules);
+
 fetchStatus();
 fetchInterfaces();
 initCharts();
@@ -351,3 +547,10 @@ fetchMetrics();
 setInterval(fetchStatus, 5000);
 setInterval(pollAlerts, 1500);
 setInterval(fetchMetrics, 5000);
+setInterval(() => {
+  const activeSection = document.querySelector('.panel.active')?.dataset.section;
+  if (activeSection === 'incidents') {
+    fetchEvents();
+    fetchIncidents();
+  }
+}, 7000);
