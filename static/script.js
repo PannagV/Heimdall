@@ -54,6 +54,9 @@ let refreshToken = sessionStorage.getItem('heimdall_refresh_token');
 let lastAlertId = 0;
 let alertCount = 0;
 
+let pollingStarted = false;
+let pollingIntervals = [];
+
 let priorityChart = null;
 let classificationChart = null;
 let hourlyChart = null;
@@ -94,6 +97,29 @@ function hideLoginPage() {
   if (loginPage) loginPage.classList.add('hidden');
   if (appShell) appShell.classList.remove('hidden');
   if (authError) authError.textContent = '';
+}
+
+function startPolling() {
+  if (pollingStarted) return;
+  pollingStarted = true;
+  pollingIntervals = [
+    setInterval(fetchStatus, 5000),
+    setInterval(pollAlerts, 1500),
+    setInterval(fetchMetrics, 5000),
+    setInterval(() => {
+      const activeSection = document.querySelector('.panel.active')?.dataset.section;
+      if (activeSection === 'incidents') {
+        fetchEvents();
+        fetchIncidents();
+      }
+    }, 7000),
+  ];
+}
+
+function stopPolling() {
+  pollingIntervals.forEach(timerId => clearInterval(timerId));
+  pollingIntervals = [];
+  pollingStarted = false;
 }
 
 function setUserChip(user) {
@@ -416,6 +442,7 @@ async function handleLogin(event) {
     hideLoginPage();
     await loadCurrentUser();
     await bootData();
+    startPolling();
   } catch (err) {
     if (authError) authError.textContent = 'Login failed. Try again.';
   }
@@ -436,6 +463,7 @@ async function handleLogout() {
   accessToken = null;
   refreshToken = null;
   sessionStorage.removeItem('heimdall_refresh_token');
+  stopPolling();
   setUserChip(null);
   showLoginPage('You have been signed out.');
 }
@@ -701,14 +729,5 @@ initAuthSession().then(async authenticated => {
   if (!authenticated) return;
   await loadCurrentUser();
   await bootData();
-  setInterval(fetchStatus, 5000);
-  setInterval(pollAlerts, 1500);
-  setInterval(fetchMetrics, 5000);
-  setInterval(() => {
-    const activeSection = document.querySelector('.panel.active')?.dataset.section;
-    if (activeSection === 'incidents') {
-      fetchEvents();
-      fetchIncidents();
-    }
-  }, 7000);
+  startPolling();
 });

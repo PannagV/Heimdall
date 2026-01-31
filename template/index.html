@@ -7,13 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/png" href="/icon.png" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="login-page" id="loginPage">
     <div class="login-card">
       <div class="login-brand">
-        <h1>Heimdall</h1>
+        <img class="login-logo" src="/hsoclogo.png" alt="HSOC logo" />
         <p>Security Telemetry Console</p>
       </div>
       <div class="login-panel">
@@ -40,7 +41,10 @@
   <div class="app hidden" id="appShell">
     <aside class="sidebar">
       <div class="brand">
-        <h1>Heimdall</h1>
+        <div class="brand-title">
+            <img class="brand-icon" src="/icon.png" alt="Heimdall icon" />
+            <h1>Heimdall</h1>
+        </div>
         <p>Security Telemetry Console</p>
       </div>
       <nav class="nav">

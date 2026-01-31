@@ -5,7 +5,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional
 
-from flask import Flask, jsonify, render_template, request, g
+from flask import Flask, jsonify, render_template, request, g, send_from_directory
 from pymongo.errors import PyMongoError
 
 from heimdall.auth import (
@@ -157,6 +157,16 @@ def index():
         default_config=DEFAULT_CONFIG,
         current_log_type=current_log_type,
     )
+
+
+@app.route("/icon.png")
+def favicon():
+    return send_from_directory(app.root_path, "icon.png")
+
+
+@app.route("/hsoclogo.png")
+def hsoc_logo():
+    return send_from_directory(app.root_path, "hsoclogo.png")
 
 
 @app.route("/api/status")

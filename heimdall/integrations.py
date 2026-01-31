@@ -259,7 +259,7 @@ class JiraSlackIntegration:
         except Exception:
             return
 
-    def send_slack_creation(self, incident: Dict, enrich: Dict, jira_issue_url: str) -> None:
+    def send_slack_creation(self, incident: Dict, enrich: Dict, jira_issue_url: str = "") -> None:
         if not self.slack_enabled() or not self.min_priority_met(incident.get("priority")):
             return
         payload = {
@@ -286,6 +286,10 @@ class JiraSlackIntegration:
                         ),
                     },
                 },
+            ],
+        }
+        if jira_issue_url:
+            payload["blocks"].append(
                 {
                     "type": "actions",
                     "elements": [
@@ -295,9 +299,8 @@ class JiraSlackIntegration:
                             "url": jira_issue_url,
                         }
                     ],
-                },
-            ],
-        }
+                }
+            )
         if DEFAULT_CONFIG["slack_channel"]:
             payload["channel"] = DEFAULT_CONFIG["slack_channel"]
 
@@ -352,12 +355,21 @@ class JiraSlackIntegration:
             return
 
     def on_incident_created(self, incident: Dict) -> None:
-        self.create_jira_issue(incident)
+        if self.enabled():
+            result = self.create_jira_issue(incident)
+            if result:
+                return
+        if self.slack_enabled() and self.min_priority_met(incident.get("priority")):
+            enrich = self.enrich_incident(incident)
+            self.send_slack_creation(incident, enrich, "")
 
     def on_incident_updated(self, incident: Dict, reason: str) -> None:
-        if not incident.get("jira_issue_key"):
-            self.create_jira_issue(incident)
-            return
-        self.update_jira_issue(incident)
+        if self.enabled():
+            if not incident.get("jira_issue_key"):
+                result = self.create_jira_issue(incident)
+                if result:
+                    return
+            if incident.get("jira_issue_key"):
+                self.update_jira_issue(incident)
         if reason in ("priority", "status"):
             self.send_slack_update(incident, reason)
