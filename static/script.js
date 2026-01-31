@@ -39,11 +39,14 @@ const reloadRulesBtn = document.getElementById('reloadRulesBtn');
 const formatRulesBtn = document.getElementById('formatRulesBtn');
 const saveRulesBtn = document.getElementById('saveRulesBtn');
 
-const authModal = document.getElementById('authModal');
+const loginPage = document.getElementById('loginPage');
+const appShell = document.getElementById('appShell');
 const authForm = document.getElementById('authForm');
 const authUsername = document.getElementById('authUsername');
 const authPassword = document.getElementById('authPassword');
 const authError = document.getElementById('authError');
+const logoutBtn = document.getElementById('logoutBtn');
+const userChip = document.getElementById('userChip');
 
 let accessToken = null;
 let refreshToken = sessionStorage.getItem('heimdall_refresh_token');
@@ -81,14 +84,27 @@ function renderStatus(running, logType) {
   statusEl.className = running ? 'status running' : 'status stopped';
 }
 
-function showAuthModal(message) {
-  if (authModal) authModal.classList.remove('hidden');
+function showLoginPage(message) {
+  if (loginPage) loginPage.classList.remove('hidden');
+  if (appShell) appShell.classList.add('hidden');
   if (authError) authError.textContent = message || '';
 }
 
-function hideAuthModal() {
-  if (authModal) authModal.classList.add('hidden');
+function hideLoginPage() {
+  if (loginPage) loginPage.classList.add('hidden');
+  if (appShell) appShell.classList.remove('hidden');
   if (authError) authError.textContent = '';
+}
+
+function setUserChip(user) {
+  if (!userChip) return;
+  if (!user) {
+    userChip.textContent = 'Signed out';
+    return;
+  }
+  const label = user.username || user.email || user.user_id || 'Signed in';
+  const role = user.role ? ` • ${user.role}` : '';
+  userChip.textContent = `${label}${role}`;
 }
 
 async function authFetch(url, options = {}, retry = true) {
@@ -100,7 +116,7 @@ async function authFetch(url, options = {}, retry = true) {
     if (refreshed) {
       return authFetch(url, options, false);
     }
-    showAuthModal('Session expired. Please sign in again.');
+    showLoginPage('Session expired. Please sign in again.');
   }
   return response;
 }
@@ -120,6 +136,17 @@ async function refreshAccessToken() {
     return true;
   } catch (err) {
     return false;
+  }
+}
+
+async function loadCurrentUser() {
+  try {
+    const res = await authFetch('/api/auth/me');
+    if (!res.ok) return;
+    const data = await res.json();
+    setUserChip({ user_id: data.user_id, role: data.role });
+  } catch (err) {
+    // ignore
   }
 }
 
@@ -363,6 +390,64 @@ async function saveRules() {
   }
 }
 
+async function handleLogin(event) {
+  event.preventDefault();
+  if (!authUsername || !authPassword) return;
+  const username = authUsername.value.trim();
+  const password = authPassword.value;
+  if (!username || !password) {
+    if (authError) authError.textContent = 'Enter your username and password.';
+    return;
+  }
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (authError) authError.textContent = data.message || 'Login failed.';
+      return;
+    }
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token;
+    sessionStorage.setItem('heimdall_refresh_token', refreshToken);
+    hideLoginPage();
+    await loadCurrentUser();
+    await bootData();
+  } catch (err) {
+    if (authError) authError.textContent = 'Login failed. Try again.';
+  }
+}
+
+async function handleLogout() {
+  try {
+    if (refreshToken) {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+    }
+  } catch (err) {
+    // ignore
+  }
+  accessToken = null;
+  refreshToken = null;
+  sessionStorage.removeItem('heimdall_refresh_token');
+  setUserChip(null);
+  showLoginPage('You have been signed out.');
+}
+
+async function bootData() {
+  await fetchStatus();
+  await fetchInterfaces();
+  await fetchMetrics();
+  if (priorityChartEl) initCharts();
+  pollAlerts();
+}
+
 function renderList(el, items) {
   el.innerHTML = '';
   if (!items || !items.length) {
@@ -571,35 +656,11 @@ navItems.forEach(item => {
 });
 
 if (authForm) {
-  authForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (authError) authError.textContent = '';
-    const payload = {
-      username: authUsername?.value?.trim() || '',
-      password: authPassword?.value || '',
-    };
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        showAuthModal(data.message || 'Login failed');
-        return;
-      }
-      accessToken = data.access_token;
-      refreshToken = data.refresh_token;
-      sessionStorage.setItem('heimdall_refresh_token', refreshToken);
-      hideAuthModal();
-      fetchStatus();
-      fetchMetrics();
-      fetchInterfaces();
-    } catch (err) {
-      showAuthModal('Login failed');
-    }
-  });
+  authForm.addEventListener('submit', handleLogin);
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', handleLogout);
 }
 
 if (refreshEventsBtn) {
@@ -626,22 +687,20 @@ async function initAuthSession() {
   if (refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      hideAuthModal();
+      hideLoginPage();
       return true;
     }
   }
-  showAuthModal('Please sign in to continue.');
+  showLoginPage('Please sign in to continue.');
   return false;
 }
 
-initCharts();
 setActiveSection('dashboard');
 
-initAuthSession().then(authenticated => {
+initAuthSession().then(async authenticated => {
   if (!authenticated) return;
-  fetchStatus();
-  fetchInterfaces();
-  fetchMetrics();
+  await loadCurrentUser();
+  await bootData();
   setInterval(fetchStatus, 5000);
   setInterval(pollAlerts, 1500);
   setInterval(fetchMetrics, 5000);

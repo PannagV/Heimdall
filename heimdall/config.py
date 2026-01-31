@@ -1,5 +1,25 @@
 import os
 import socket
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
+
+def _load_env() -> None:
+    if load_dotenv is None:
+        return
+    here = Path(__file__).resolve()
+    candidates = [here.parent / ".env", here.parent.parent / ".env"]
+    for candidate in candidates:
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+    load_dotenv(override=False)
+
+
+_load_env()
 
 DEFAULT_CONFIG = {
     "suricata_config": os.environ.get("SURICATA_CONFIG", "/etc/suricata/suricata.yaml"),
