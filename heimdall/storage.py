@@ -7,12 +7,14 @@ from .correlation import INCIDENTS_MONGO_VALIDATOR
 from .hces import HCES_MONGO_VALIDATOR
 
 
-def init_mongo(mongo_uri: str) -> Tuple[Optional[MongoClient], Optional[object], Optional[object]]:
+def init_mongo(
+    mongo_uri: str,
+) -> Tuple[Optional[MongoClient], Optional[object], Optional[object], Optional[object], Optional[object], Optional[object]]:
     try:
         client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
         client.admin.command("ping")
     except PyMongoError:
-        return None, None, None
+        return None, None, None, None, None, None
 
     db = client["alerts"]
 
@@ -25,7 +27,7 @@ def init_mongo(mongo_uri: str) -> Tuple[Optional[MongoClient], Optional[object],
                 validationLevel="moderate",
             )
         except PyMongoError:
-            return client, db["events"], None
+            return client, db["events"], None, None, None, None
     else:
         options = existing[0].get("options", {})
         validator = options.get("validator")
@@ -66,6 +68,9 @@ def init_mongo(mongo_uri: str) -> Tuple[Optional[MongoClient], Optional[object],
 
     events_collection = db["events"]
     incidents_collection = db["incidents"]
+    users_collection = db["users"]
+    refresh_tokens_collection = db["refresh_tokens"]
+    audit_collection = db["audit_logs"]
 
     try:
         events_collection.create_index("timestamp")
@@ -86,4 +91,29 @@ def init_mongo(mongo_uri: str) -> Tuple[Optional[MongoClient], Optional[object],
     except PyMongoError:
         pass
 
-    return client, events_collection, incidents_collection
+    try:
+        users_collection.create_index("username", unique=True)
+        users_collection.create_index("email", unique=True, sparse=True)
+    except PyMongoError:
+        pass
+
+    try:
+        refresh_tokens_collection.create_index("token_hash", unique=True)
+        refresh_tokens_collection.create_index("user_id")
+    except PyMongoError:
+        pass
+
+    try:
+        audit_collection.create_index("timestamp")
+        audit_collection.create_index("user_id")
+    except PyMongoError:
+        pass
+
+    return (
+        client,
+        events_collection,
+        incidents_collection,
+        users_collection,
+        refresh_tokens_collection,
+        audit_collection,
+    )

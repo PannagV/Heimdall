@@ -39,6 +39,15 @@ const reloadRulesBtn = document.getElementById('reloadRulesBtn');
 const formatRulesBtn = document.getElementById('formatRulesBtn');
 const saveRulesBtn = document.getElementById('saveRulesBtn');
 
+const authModal = document.getElementById('authModal');
+const authForm = document.getElementById('authForm');
+const authUsername = document.getElementById('authUsername');
+const authPassword = document.getElementById('authPassword');
+const authError = document.getElementById('authError');
+
+let accessToken = null;
+let refreshToken = sessionStorage.getItem('heimdall_refresh_token');
+
 let lastAlertId = 0;
 let alertCount = 0;
 
@@ -72,15 +81,57 @@ function renderStatus(running, logType) {
   statusEl.className = running ? 'status running' : 'status stopped';
 }
 
+function showAuthModal(message) {
+  if (authModal) authModal.classList.remove('hidden');
+  if (authError) authError.textContent = message || '';
+}
+
+function hideAuthModal() {
+  if (authModal) authModal.classList.add('hidden');
+  if (authError) authError.textContent = '';
+}
+
+async function authFetch(url, options = {}, retry = true) {
+  const headers = options.headers ? { ...options.headers } : {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401 && refreshToken && retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return authFetch(url, options, false);
+    }
+    showAuthModal('Session expired. Please sign in again.');
+  }
+  return response;
+}
+
+async function refreshAccessToken() {
+  try {
+    const res = await fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token;
+    sessionStorage.setItem('heimdall_refresh_token', refreshToken);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 async function fetchStatus() {
-  const res = await fetch('/api/status');
+  const res = await authFetch('/api/status');
   const data = await res.json();
   renderStatus(data.running, data.log_type);
 }
 
 async function fetchInterfaces() {
   try {
-    const res = await fetch('/api/interfaces');
+    const res = await authFetch('/api/interfaces');
     const data = await res.json();
     const interfaces = data.interfaces || [];
     if (!interfaces.length) return;
@@ -236,7 +287,7 @@ function renderIncidents(incidents) {
 
 async function fetchEvents() {
   try {
-    const res = await fetch('/api/events?limit=200');
+    const res = await authFetch('/api/events?limit=200');
     const data = await res.json();
     renderEvents(data.events || []);
   } catch (err) {
@@ -246,7 +297,7 @@ async function fetchEvents() {
 
 async function fetchIncidents() {
   try {
-    const res = await fetch('/api/incidents?limit=200');
+    const res = await authFetch('/api/incidents?limit=200');
     const data = await res.json();
     renderIncidents(data.incidents || []);
   } catch (err) {
@@ -257,7 +308,7 @@ async function fetchIncidents() {
 async function closeIncident(incidentId) {
   if (!incidentId) return;
   try {
-    await fetch(`/api/incidents/${incidentId}/close`, { method: 'POST' });
+    await authFetch(`/api/incidents/${incidentId}/close`, { method: 'POST' });
     fetchIncidents();
   } catch (err) {
     // ignore
@@ -272,7 +323,7 @@ function setRulesStatus(message, isError = false) {
 
 async function fetchRules() {
   try {
-    const res = await fetch('/api/rules');
+    const res = await authFetch('/api/rules');
     const data = await res.json();
     if (rulesPathEl) rulesPathEl.textContent = data.path || 'Rules file';
     if (rulesEditor) rulesEditor.value = data.raw || '';
@@ -296,7 +347,7 @@ function formatRules() {
 async function saveRules() {
   if (!rulesEditor) return;
   try {
-    const res = await fetch('/api/rules', {
+    const res = await authFetch('/api/rules', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ raw: rulesEditor.value }),
@@ -456,7 +507,7 @@ function updateCharts(metrics) {
 
 async function pollAlerts() {
   try {
-    const res = await fetch(`/api/alerts?since=${lastAlertId}`);
+    const res = await authFetch(`/api/alerts?since=${lastAlertId}`);
     const data = await res.json();
     data.alerts.forEach(alert => {
       lastAlertId = Math.max(lastAlertId, alert.id || 0);
@@ -471,7 +522,7 @@ async function pollAlerts() {
 
 async function fetchMetrics() {
   try {
-    const res = await fetch('/api/metrics');
+    const res = await authFetch('/api/metrics');
     const data = await res.json();
     updateDashboard(data);
   } catch (err) {
@@ -485,7 +536,7 @@ startBtn.addEventListener('click', async () => {
     config: configInput.value.trim(),
     log_type: logTypeSelect.value,
   };
-  const res = await fetch('/api/start', {
+  const res = await authFetch('/api/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -498,12 +549,12 @@ startBtn.addEventListener('click', async () => {
 });
 
 stopBtn.addEventListener('click', async () => {
-  await fetch('/api/stop', { method: 'POST' });
+  await authFetch('/api/stop', { method: 'POST' });
   fetchStatus();
 });
 
 clearBtn.addEventListener('click', async () => {
-  await fetch('/api/clear', { method: 'POST' });
+  await authFetch('/api/clear', { method: 'POST' });
   alertsEl.innerHTML = '';
   alertCount = 0;
   lastAlertId = 0;
@@ -518,6 +569,38 @@ navItems.forEach(item => {
     }
   });
 });
+
+if (authForm) {
+  authForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (authError) authError.textContent = '';
+    const payload = {
+      username: authUsername?.value?.trim() || '',
+      password: authPassword?.value || '',
+    };
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAuthModal(data.message || 'Login failed');
+        return;
+      }
+      accessToken = data.access_token;
+      refreshToken = data.refresh_token;
+      sessionStorage.setItem('heimdall_refresh_token', refreshToken);
+      hideAuthModal();
+      fetchStatus();
+      fetchMetrics();
+      fetchInterfaces();
+    } catch (err) {
+      showAuthModal('Login failed');
+    }
+  });
+}
 
 if (refreshEventsBtn) {
   refreshEventsBtn.addEventListener('click', () => {
@@ -539,18 +622,34 @@ if (reloadRulesBtn) reloadRulesBtn.addEventListener('click', fetchRules);
 if (formatRulesBtn) formatRulesBtn.addEventListener('click', formatRules);
 if (saveRulesBtn) saveRulesBtn.addEventListener('click', saveRules);
 
-fetchStatus();
-fetchInterfaces();
+async function initAuthSession() {
+  if (refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      hideAuthModal();
+      return true;
+    }
+  }
+  showAuthModal('Please sign in to continue.');
+  return false;
+}
+
 initCharts();
 setActiveSection('dashboard');
-fetchMetrics();
-setInterval(fetchStatus, 5000);
-setInterval(pollAlerts, 1500);
-setInterval(fetchMetrics, 5000);
-setInterval(() => {
-  const activeSection = document.querySelector('.panel.active')?.dataset.section;
-  if (activeSection === 'incidents') {
-    fetchEvents();
-    fetchIncidents();
-  }
-}, 7000);
+
+initAuthSession().then(authenticated => {
+  if (!authenticated) return;
+  fetchStatus();
+  fetchInterfaces();
+  fetchMetrics();
+  setInterval(fetchStatus, 5000);
+  setInterval(pollAlerts, 1500);
+  setInterval(fetchMetrics, 5000);
+  setInterval(() => {
+    const activeSection = document.querySelector('.panel.active')?.dataset.section;
+    if (activeSection === 'incidents') {
+      fetchEvents();
+      fetchIncidents();
+    }
+  }, 7000);
+});

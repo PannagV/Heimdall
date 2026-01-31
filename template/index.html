@@ -212,6 +212,27 @@
     </main>
   </div>
 
+  <div class="auth-modal" id="authModal">
+    <div class="auth-card">
+      <h3>Heimdall Access</h3>
+      <p>Sign in to access dashboards and incident management.</p>
+      <form id="authForm">
+        <div class="field">
+          <label for="authUsername">Username</label>
+          <input id="authUsername" type="text" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="authPassword">Password</label>
+          <input id="authPassword" type="password" autocomplete="current-password" />
+        </div>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Sign In</button>
+        </div>
+        <div class="auth-error" id="authError"></div>
+      </form>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="/static/script.js"></script>
 </body>

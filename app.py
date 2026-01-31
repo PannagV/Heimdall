@@ -1,12 +1,27 @@
 import json
 import threading
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, g
 from pymongo.errors import PyMongoError
 
+from heimdall.auth import (
+    create_access_token,
+    get_user_by_refresh,
+    hash_password,
+    is_role_allowed,
+    issue_tokens,
+    log_auth_event,
+    store_refresh_token,
+    validate_jwt,
+    verify_password,
+    hash_refresh_token,
+    rotate_refresh_token,
+    utc_iso,
+)
 from heimdall.config import ALERT_BUFFER_SIZE, DEFAULT_CONFIG
 from heimdall.correlation import CorrelationEngine, IncidentCloser
 from heimdall.hces import (
@@ -30,6 +45,9 @@ alerts_lock = threading.Lock()
 mongo_client: Optional[object] = None
 events_collection = None
 incidents_collection = None
+users_collection = None
+refresh_tokens_collection = None
+audit_collection = None
 mongo_lock = threading.Lock()
 incidents_lock = threading.Lock()
 
@@ -38,7 +56,9 @@ current_log_type = DEFAULT_CONFIG["suricata_log_type"]
 
 correlation_engine: Optional[CorrelationEngine] = None
 incident_closer: Optional[IncidentCloser] = None
-integration_client: Optional[JiraSlackIntegration] = None
+
+auth_lock = threading.Lock()
+auth_rate_limits: Dict[str, Dict] = {}
 
 
 def push_alert(event: Dict) -> None:
@@ -78,6 +98,58 @@ def serialize_doc(doc: Dict) -> Dict:
     return doc
 
 
+def client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def rate_limit(key: str, limit: int) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    with auth_lock:
+        entry = auth_rate_limits.get(key)
+        if not entry or entry["reset"] <= now:
+            auth_rate_limits[key] = {"count": 1, "reset": now + 60}
+            return True
+        if entry["count"] >= limit:
+            return False
+        entry["count"] += 1
+        return True
+
+
+def require_auth(required_role: Optional[str] = None):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header.replace("Bearer ", "").strip()
+            if not token:
+                return jsonify({"status": "error", "message": "missing token"}), 401
+            payload = validate_jwt(token)
+            if not payload:
+                return jsonify({"status": "error", "message": "invalid token"}), 401
+            g.user_id = payload.get("sub")
+            g.role = payload.get("role")
+            if required_role and not is_role_allowed(g.role, required_role):
+                return jsonify({"status": "error", "message": "forbidden"}), 403
+            return func(*args, **kwargs)
+
+        wrapper.__name__ = func.__name__
+        return wrapper
+
+    return decorator
+
+
+@app.before_request
+def enforce_api_auth():
+    path = request.path
+    if not path.startswith("/api/"):
+        return None
+    if path.startswith("/api/auth/"):
+        return None
+    return require_auth()(lambda: None)()
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -88,16 +160,19 @@ def index():
 
 
 @app.route("/api/status")
+@require_auth("viewer")
 def status():
     return jsonify({"running": suricata_running(), "log_type": current_log_type})
 
 
 @app.route("/api/interfaces")
+@require_auth("viewer")
 def api_interfaces():
     return jsonify({"interfaces": list_interfaces()})
 
 
 @app.route("/api/start", methods=["POST"])
+@require_auth("admin")
 def api_start():
     payload = request.get_json(silent=True) or {}
     config_path = payload.get("config") or DEFAULT_CONFIG["suricata_config"]
@@ -117,12 +192,14 @@ def api_start():
 
 
 @app.route("/api/stop", methods=["POST"])
+@require_auth("admin")
 def api_stop():
     result = stop_suricata()
     return jsonify(result)
 
 
 @app.route("/api/alerts")
+@require_auth("viewer")
 def api_alerts():
     since = request.args.get("since", type=int, default=0)
     with alerts_lock:
@@ -132,11 +209,13 @@ def api_alerts():
 
 
 @app.route("/api/metrics")
+@require_auth("viewer")
 def api_metrics():
     return jsonify(get_metrics(events_collection, mongo_lock))
 
 
 @app.route("/api/clear", methods=["POST"])
+@require_auth("analyst")
 def api_clear():
     global alert_id
     with alerts_lock:
@@ -146,11 +225,134 @@ def api_clear():
 
 
 @app.route("/api/health")
+@require_auth("viewer")
 def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    if users_collection is None or refresh_tokens_collection is None:
+        return jsonify({"status": "error", "message": "auth unavailable"}), 503
+    if not DEFAULT_CONFIG["jwt_secret"] or not DEFAULT_CONFIG["refresh_token_secret"]:
+        return jsonify({"status": "error", "message": "auth secrets not configured"}), 500
+
+    if not rate_limit(f"login:{client_ip()}", DEFAULT_CONFIG["auth_rate_limit_per_min"]):
+        return jsonify({"status": "error", "message": "rate limit"}), 429
+
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    if not username or not password:
+        return jsonify({"status": "error", "message": "invalid credentials"}), 400
+
+    user = users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
+    if not user or not verify_password(password, user.get("password_hash", "")):
+        log_auth_event(audit_collection, user.get("user_id") if user else None, "login", False, client_ip())
+        return jsonify({"status": "error", "message": "invalid credentials"}), 401
+
+    tokens = issue_tokens(user["user_id"], user["role"])
+    store_refresh_token(refresh_tokens_collection, user["user_id"], tokens.refresh_token)
+    log_auth_event(audit_collection, user.get("user_id"), "login", True, client_ip())
+
+    return jsonify(
+        {"access_token": tokens.access_token, "refresh_token": tokens.refresh_token}
+    )
+
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def api_refresh():
+    if users_collection is None or refresh_tokens_collection is None:
+        return jsonify({"status": "error", "message": "auth unavailable"}), 503
+    if not DEFAULT_CONFIG["jwt_secret"] or not DEFAULT_CONFIG["refresh_token_secret"]:
+        return jsonify({"status": "error", "message": "auth secrets not configured"}), 500
+
+    if not rate_limit(
+        f"refresh:{client_ip()}", DEFAULT_CONFIG["auth_refresh_rate_limit_per_min"]
+    ):
+        return jsonify({"status": "error", "message": "rate limit"}), 429
+
+    payload = request.get_json(silent=True) or {}
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"status": "error", "message": "missing refresh token"}), 400
+
+    user = get_user_by_refresh(refresh_tokens_collection, users_collection, refresh_token)
+    if not user:
+        log_auth_event(audit_collection, None, "refresh", False, client_ip())
+        return jsonify({"status": "error", "message": "invalid refresh token"}), 401
+
+    old_hash = hash_refresh_token(refresh_token)
+    new_refresh = rotate_refresh_token(refresh_tokens_collection, old_hash)
+    store_refresh_token(refresh_tokens_collection, user["user_id"], new_refresh)
+    refresh_tokens_collection.update_one(
+        {"token_hash": old_hash}, {"$set": {"last_used_at": utc_iso()}}
+    )
+
+    access = create_access_token(user["user_id"], user["role"])
+    log_auth_event(audit_collection, user.get("user_id"), "refresh", True, client_ip())
+
+    return jsonify({"access_token": access, "refresh_token": new_refresh})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_logout():
+    if refresh_tokens_collection is None:
+        return jsonify({"status": "error", "message": "auth unavailable"}), 503
+    payload = request.get_json(silent=True) or {}
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"status": "error", "message": "missing refresh token"}), 400
+
+    token_hash = hash_refresh_token(refresh_token)
+    refresh_tokens_collection.update_one(
+        {"token_hash": token_hash}, {"$set": {"revoked": True, "revoked_at": utc_iso()}}
+    )
+    log_auth_event(audit_collection, None, "logout", True, client_ip())
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/auth/me")
+@require_auth("viewer")
+def api_me():
+    return jsonify({"user_id": g.user_id, "role": g.role})
+
+
+@app.route("/api/auth/users", methods=["POST"])
+@require_auth("admin")
+def api_create_user():
+    if users_collection is None:
+        return jsonify({"status": "error", "message": "auth unavailable"}), 503
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    role = (payload.get("role") or "viewer").lower()
+    email = (payload.get("email") or "").strip() or None
+
+    if role not in ("viewer", "analyst", "admin"):
+        return jsonify({"status": "error", "message": "invalid role"}), 400
+    if not username or not password:
+        return jsonify({"status": "error", "message": "username and password required"}), 400
+
+    user_doc = {
+        "user_id": str(uuid.uuid4()),
+        "username": username,
+        "email": email,
+        "password_hash": hash_password(password),
+        "role": role,
+        "created_at": utc_iso(),
+    }
+    try:
+        users_collection.insert_one(user_doc)
+    except PyMongoError:
+        return jsonify({"status": "error", "message": "user exists"}), 409
+
+    log_auth_event(audit_collection, user_doc["user_id"], "create_user", True, client_ip())
+    return jsonify({"status": "created", "user_id": user_doc["user_id"]})
+
+
 @app.route("/api/events")
+@require_auth("viewer")
 def api_events():
     if events_collection is None:
         return jsonify({"events": []})
@@ -184,6 +386,7 @@ def api_events():
 
 
 @app.route("/api/incidents")
+@require_auth("viewer")
 def api_incidents():
     if incidents_collection is None:
         return jsonify({"incidents": []})
@@ -207,6 +410,7 @@ def api_incidents():
 
 
 @app.route("/api/incidents/<incident_id>/close", methods=["POST"])
+@require_auth("analyst")
 def api_close_incident(incident_id: str):
     if incidents_collection is None:
         return jsonify({"status": "error", "message": "incidents collection unavailable"}), 503
@@ -233,6 +437,7 @@ def api_close_incident(incident_id: str):
 
 
 @app.route("/api/rules", methods=["GET", "PUT"])
+@require_auth("admin")
 def api_rules():
     rules_path = DEFAULT_CONFIG["correlation_rules_path"]
     if request.method == "GET":
@@ -278,9 +483,31 @@ def api_rules():
 
 
 init_hces_validator()
-mongo_client, events_collection, incidents_collection = init_mongo(
-    DEFAULT_CONFIG["mongo_uri"]
-)
+(
+    mongo_client,
+    events_collection,
+    incidents_collection,
+    users_collection,
+    refresh_tokens_collection,
+    audit_collection,
+) = init_mongo(DEFAULT_CONFIG["mongo_uri"])
+
+if (
+    users_collection is not None
+    and DEFAULT_CONFIG["bootstrap_admin_user"]
+    and DEFAULT_CONFIG["bootstrap_admin_password"]
+):
+    existing = users_collection.find_one({"username": DEFAULT_CONFIG["bootstrap_admin_user"]})
+    if not existing:
+        users_collection.insert_one(
+            {
+                "user_id": str(uuid.uuid4()),
+                "username": DEFAULT_CONFIG["bootstrap_admin_user"],
+                "password_hash": hash_password(DEFAULT_CONFIG["bootstrap_admin_password"]),
+                "role": DEFAULT_CONFIG["bootstrap_admin_role"],
+                "created_at": utc_iso(),
+            }
+        )
 integration_client = JiraSlackIntegration(
     events_collection,
     incidents_collection,
