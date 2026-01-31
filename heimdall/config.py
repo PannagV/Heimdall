@@ -14,6 +14,17 @@ DEFAULT_CONFIG = {
         "CORRELATION_RULES_PATH",
         os.path.join(os.path.dirname(__file__), "..", "correlation_rules.json"),
     ),
+    "jira_base_url": os.environ.get("JIRA_BASE_URL", ""),
+    "jira_project_key": os.environ.get("JIRA_PROJECT_KEY", "HEIMDALL"),
+    "jira_email": os.environ.get("JIRA_EMAIL", ""),
+    "jira_api_token": os.environ.get("JIRA_API_TOKEN", ""),
+    "jira_issue_type": os.environ.get("JIRA_ISSUE_TYPE", "Security Incident"),
+    "jira_field_heimdall_id": os.environ.get("JIRA_FIELD_HEIMDALL_ID", ""),
+    "jira_field_source_ips": os.environ.get("JIRA_FIELD_SOURCE_IPS", ""),
+    "jira_field_event_count": os.environ.get("JIRA_FIELD_EVENT_COUNT", ""),
+    "slack_webhook_url": os.environ.get("SLACK_WEBHOOK_URL", ""),
+    "slack_channel": os.environ.get("SLACK_CHANNEL", ""),
+    "integration_min_priority": os.environ.get("INTEGRATION_MIN_PRIORITY", "medium"),
 }
 
 ALERT_BUFFER_SIZE = 500

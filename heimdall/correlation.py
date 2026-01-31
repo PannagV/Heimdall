@@ -49,6 +49,7 @@ class CorrelationEngine:
         mongo_lock,
         incidents_lock,
         rules_path: Optional[str] = None,
+        integration=None,
     ) -> None:
         self.mongo_client = mongo_client
         self.events_collection = events_collection
@@ -58,6 +59,23 @@ class CorrelationEngine:
         self.rules_path = rules_path or DEFAULT_CONFIG["correlation_rules_path"]
         self.rules = self.load_rules()
         self.last_cleanup: Optional[datetime] = None
+        self.integration = integration
+
+    def dispatch_integration(self, method: str, incident: Dict, reason: Optional[str] = None) -> None:
+        if not self.integration:
+            return
+
+        def runner():
+            try:
+                handler = getattr(self.integration, method)
+                if reason is None:
+                    handler(incident)
+                else:
+                    handler(incident, reason)
+            except Exception:
+                return
+
+        threading.Thread(target=runner, daemon=True).start()
 
     def load_rules(self) -> List[Dict]:
         try:
@@ -228,13 +246,24 @@ class CorrelationEngine:
         cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
         try:
             with self.incidents_lock:
-                self.incidents_collection.update_many(
-                    {"status": {"$ne": "closed"}, "last_seen": {"$lt": cutoff_iso}},
-                    {"$set": {"status": "closed"}},
+                stale = list(
+                    self.incidents_collection.find(
+                        {"status": {"$ne": "closed"}, "last_seen": {"$lt": cutoff_iso}}
+                    )
                 )
+                if stale:
+                    self.incidents_collection.update_many(
+                        {"incident_id": {"$in": [item.get("incident_id") for item in stale]}},
+                        {"$set": {"status": "closed"}},
+                    )
         except PyMongoError:
-            pass
+            stale = []
         self.last_cleanup = current_time
+
+        if stale:
+            for incident in stale:
+                incident["status"] = "closed"
+                self.dispatch_integration("on_incident_updated", incident, "status")
 
     def correlate_event(self, event: Dict) -> Dict:
         if self.incidents_collection is None or self.events_collection is None:
@@ -314,6 +343,11 @@ class CorrelationEngine:
                     "first_seen": candidate.get("first_seen"),
                     "last_seen": event_iso,
                 }
+
+                if new_priority != candidate.get("priority"):
+                    candidate["priority"] = new_priority
+                    candidate["last_seen"] = event_iso
+                    self.dispatch_integration("on_incident_updated", candidate, "priority")
                 return event
 
             incident_id = self.next_incident_id(event_time)
@@ -347,6 +381,8 @@ class CorrelationEngine:
                 "first_seen": event_iso,
                 "last_seen": event_iso,
             }
+
+            self.dispatch_integration("on_incident_created", incident_doc)
             return event
 
         return event

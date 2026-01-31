@@ -16,6 +16,7 @@ from heimdall.hces import (
     validate_hces_event,
 )
 from heimdall.metrics import get_metrics
+from heimdall.integrations import JiraSlackIntegration
 from heimdall.storage import init_mongo
 from heimdall.suricata import list_interfaces, start_suricata, stop_suricata, suricata_running
 from heimdall.tailer import LogTailer
@@ -37,6 +38,7 @@ current_log_type = DEFAULT_CONFIG["suricata_log_type"]
 
 correlation_engine: Optional[CorrelationEngine] = None
 incident_closer: Optional[IncidentCloser] = None
+integration_client: Optional[JiraSlackIntegration] = None
 
 
 def push_alert(event: Dict) -> None:
@@ -215,10 +217,18 @@ def api_close_incident(incident_id: str):
                 {"incident_id": incident_id},
                 {"$set": {"status": "closed", "last_seen": now_iso}},
             )
+            incident = incidents_collection.find_one({"incident_id": incident_id}, {"_id": 0})
         if result.matched_count == 0:
             return jsonify({"status": "error", "message": "incident not found"}), 404
     except PyMongoError:
         return jsonify({"status": "error", "message": "failed to update incident"}), 500
+
+    if integration_client and incident:
+        try:
+            integration_client.on_incident_updated(incident, "status")
+        except Exception:
+            pass
+
     return jsonify({"status": "closed", "incident_id": incident_id})
 
 
@@ -271,6 +281,12 @@ init_hces_validator()
 mongo_client, events_collection, incidents_collection = init_mongo(
     DEFAULT_CONFIG["mongo_uri"]
 )
+integration_client = JiraSlackIntegration(
+    events_collection,
+    incidents_collection,
+    mongo_lock,
+    incidents_lock,
+)
 correlation_engine = CorrelationEngine(
     mongo_client,
     events_collection,
@@ -278,6 +294,7 @@ correlation_engine = CorrelationEngine(
     mongo_lock,
     incidents_lock,
     DEFAULT_CONFIG["correlation_rules_path"],
+    integration_client,
 )
 incident_closer = IncidentCloser(correlation_engine)
 incident_closer.start()
