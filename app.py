@@ -1,11 +1,12 @@
 import json
 import threading
+import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional
 
-from flask import Flask, jsonify, render_template, request, g, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, g, send_from_directory, stream_with_context
 from pymongo.errors import PyMongoError
 
 from heimdall.auth import (
@@ -41,6 +42,7 @@ app = Flask(__name__, template_folder="template")
 alerts: Deque[Dict] = deque(maxlen=ALERT_BUFFER_SIZE)
 alert_id = 0
 alerts_lock = threading.Lock()
+alerts_condition = threading.Condition(alerts_lock)
 
 mongo_client: Optional[object] = None
 events_collection = None
@@ -63,13 +65,14 @@ auth_rate_limits: Dict[str, Dict] = {}
 
 def push_alert(event: Dict) -> None:
     global alert_id
-    is_alert = event.get("event", {}).get("kind") == "alert"
+    is_alert = event.get("event", {}).get("kind") == "alert" or bool(event.get("alert"))
     if is_alert:
         with alerts_lock:
             alert_id += 1
             ui_event = dict(event)
             ui_event["id"] = alert_id
             alerts.append(ui_event)
+            alerts_condition.notify_all()
 
     store_hces_event(event)
 
@@ -123,6 +126,8 @@ def require_auth(required_role: Optional[str] = None):
         def wrapper(*args, **kwargs):
             auth_header = request.headers.get("Authorization", "")
             token = auth_header.replace("Bearer ", "").strip()
+            if not token:
+                token = (request.args.get("token") or "").strip()
             if not token:
                 return jsonify({"status": "error", "message": "missing token"}), 401
             payload = validate_jwt(token)
@@ -216,6 +221,45 @@ def api_alerts():
         new_alerts = [alert for alert in alerts if alert.get("id", 0) > since]
         latest_id = alert_id
     return jsonify({"alerts": new_alerts, "latest_id": latest_id})
+
+
+@app.route("/api/alerts/stream")
+@require_auth("viewer")
+def api_alerts_stream():
+    since = request.args.get("since", type=int, default=0)
+    last_event_id = request.headers.get("Last-Event-ID")
+    if last_event_id and last_event_id.isdigit():
+        since = max(since, int(last_event_id))
+
+    @stream_with_context
+    def generate():
+        last_id = since
+        last_ping = time.time()
+        while True:
+            new_alerts = []
+            with alerts_lock:
+                if last_id < alert_id:
+                    new_alerts = [alert for alert in alerts if alert.get("id", 0) > last_id]
+
+            if new_alerts:
+                for alert in new_alerts:
+                    last_id = max(last_id, alert.get("id", 0))
+                    payload = json.dumps(alert, default=str)
+                    yield f"id: {last_id}\ndata: {payload}\n\n"
+                continue
+
+            with alerts_condition:
+                alerts_condition.wait(timeout=1.0)
+
+            if time.time() - last_ping >= 10:
+                yield ": ping\n\n"
+                last_ping = time.time()
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/api/metrics")
@@ -524,6 +568,7 @@ integration_client = JiraSlackIntegration(
     mongo_lock,
     incidents_lock,
 )
+integration_client.bootstrap()
 correlation_engine = CorrelationEngine(
     mongo_client,
     events_collection,

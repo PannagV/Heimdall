@@ -57,6 +57,15 @@ let alertCount = 0;
 let pollingStarted = false;
 let pollingIntervals = [];
 
+let alertPollInFlight = false;
+let alertStreamController = null;
+let alertStreamReader = null;
+let alertStreamBuffer = '';
+let alertStreamRetry = null;
+let alertPollTimer = null;
+let alertStreamOpen = false;
+let lastStreamMessageAt = 0;
+
 let priorityChart = null;
 let classificationChart = null;
 let hourlyChart = null;
@@ -102,9 +111,10 @@ function hideLoginPage() {
 function startPolling() {
   if (pollingStarted) return;
   pollingStarted = true;
+  startAlertStream();
+  startAlertPollingFallback();
   pollingIntervals = [
     setInterval(fetchStatus, 5000),
-    setInterval(pollAlerts, 1500),
     setInterval(fetchMetrics, 5000),
     setInterval(() => {
       const activeSection = document.querySelector('.panel.active')?.dataset.section;
@@ -120,6 +130,8 @@ function stopPolling() {
   pollingIntervals.forEach(timerId => clearInterval(timerId));
   pollingIntervals = [];
   pollingStarted = false;
+  stopAlertStream();
+  stopAlertPollingFallback();
 }
 
 function setUserChip(user) {
@@ -131,6 +143,135 @@ function setUserChip(user) {
   const label = user.username || user.email || user.user_id || 'Signed in';
   const role = user.role ? ` • ${user.role}` : '';
   userChip.textContent = `${label}${role}`;
+}
+
+function handleSseChunk(chunk) {
+  if (!chunk) return;
+  const lines = chunk.split('\n');
+  let dataLines = [];
+  let id = null;
+  lines.forEach(line => {
+    if (line.startsWith(':')) return;
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    } else if (line.startsWith('id:')) {
+      id = line.slice(3).trim();
+    }
+  });
+  const data = dataLines.join('\n').trim();
+  if (!data) return;
+  try {
+    const alert = JSON.parse(data);
+    const eventId = Number(id) || alert.id || 0;
+    lastAlertId = Math.max(lastAlertId, eventId);
+    lastStreamMessageAt = Date.now();
+    addAlertCard(alert);
+    alertCount += 1;
+    alertCountEl.textContent = alertCount;
+  } catch (err) {
+    // ignore malformed payloads
+  }
+}
+
+async function startAlertStream() {
+  if (alertStreamController || !accessToken) return;
+  const controller = new AbortController();
+  alertStreamController = controller;
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'Cache-Control': 'no-cache',
+  };
+  if (lastAlertId) headers['Last-Event-ID'] = String(lastAlertId);
+  const url = `/api/alerts/stream?since=${lastAlertId}`;
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (res.status === 401 && refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        alertStreamController = null;
+        return startAlertStream();
+      }
+    }
+
+    if (!res.ok || !res.body) {
+      throw new Error('stream failed');
+    }
+
+    alertStreamOpen = true;
+    lastStreamMessageAt = Date.now();
+    stopAlertPollingFallback();
+
+    const reader = res.body.getReader();
+    alertStreamReader = reader;
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() || '';
+      chunks.forEach(handleSseChunk);
+    }
+    alertStreamBuffer = buffer;
+  } catch (err) {
+    if (controller.signal.aborted) return;
+  } finally {
+    alertStreamOpen = false;
+    if (alertStreamController === controller) {
+      alertStreamController = null;
+      alertStreamReader = null;
+    }
+    startAlertPollingFallback();
+    if (!pollingStarted || alertStreamRetry) return;
+    alertStreamRetry = setTimeout(async () => {
+      alertStreamRetry = null;
+      if (!pollingStarted) return;
+      if (refreshToken) {
+        const refreshed = await refreshAccessToken();
+        if (!refreshed) return;
+      }
+      startAlertStream();
+    }, 1000);
+  }
+}
+
+function stopAlertStream() {
+  if (alertStreamController) {
+    alertStreamController.abort();
+    alertStreamController = null;
+  }
+  if (alertStreamReader) {
+    alertStreamReader.cancel();
+    alertStreamReader = null;
+  }
+  alertStreamOpen = false;
+  if (alertStreamRetry) {
+    clearTimeout(alertStreamRetry);
+    alertStreamRetry = null;
+  }
+}
+
+function startAlertPollingFallback() {
+  if (alertPollTimer) return;
+  alertPollTimer = setInterval(() => {
+    if (alertStreamOpen) return;
+    pollAlerts();
+  }, 500);
+}
+
+function stopAlertPollingFallback() {
+  if (!alertPollTimer) return;
+  clearInterval(alertPollTimer);
+  alertPollTimer = null;
 }
 
 async function authFetch(url, options = {}, retry = true) {
@@ -159,6 +300,13 @@ async function refreshAccessToken() {
     accessToken = data.access_token;
     refreshToken = data.refresh_token;
     sessionStorage.setItem('heimdall_refresh_token', refreshToken);
+    if (pollingStarted) {
+      stopAlertStream();
+      startAlertStream();
+    }
+    if (pollingStarted) {
+      startAlertPollingFallback();
+    }
     return true;
   } catch (err) {
     return false;
@@ -619,6 +767,8 @@ function updateCharts(metrics) {
 }
 
 async function pollAlerts() {
+  if (alertPollInFlight) return;
+  alertPollInFlight = true;
   try {
     const res = await authFetch(`/api/alerts?since=${lastAlertId}`);
     const data = await res.json();
@@ -630,6 +780,8 @@ async function pollAlerts() {
     alertCountEl.textContent = alertCount;
   } catch (err) {
     // ignore transient errors
+  } finally {
+    alertPollInFlight = false;
   }
 }
 

@@ -29,11 +29,13 @@ INCIDENTS_MONGO_VALIDATOR = {
             "status": {"bsonType": "string"},
             "priority": {"bsonType": "string"},
             "category": {"bsonType": "string"},
+            "event_count": {"bsonType": "int"},
             "entities": {"bsonType": "object"},
             "event_refs": {"bsonType": "array"},
             "first_seen": {"bsonType": "string"},
             "last_seen": {"bsonType": "string"},
             "rule_ids": {"bsonType": "array"},
+            "notifications": {"bsonType": "object"},
         },
         "additionalProperties": True,
     }
@@ -318,6 +320,7 @@ class CorrelationEngine:
                 new_priority = self.pick_priority(candidate.get("priority", "low"), incident_priority)
                 update_doc = {
                     "$set": {"last_seen": event_iso, "priority": new_priority},
+                    "$inc": {"event_count": 1},
                     "$addToSet": {
                         "event_refs": event.get("event_id"),
                         "rule_ids": rule_id,
@@ -356,6 +359,7 @@ class CorrelationEngine:
                 "status": "open",
                 "priority": incident_priority,
                 "category": incident_category,
+                "event_count": 1,
                 "entities": {
                     "source_ips": entities.get("source_ips", []),
                     "destination_ips": entities.get("destination_ips", []),
@@ -367,6 +371,7 @@ class CorrelationEngine:
                 "first_seen": event_iso,
                 "last_seen": event_iso,
                 "rule_ids": [rule_id],
+                "notifications": {"slack_notified": False, "last_slack_update": None},
             }
             try:
                 with self.incidents_lock:
