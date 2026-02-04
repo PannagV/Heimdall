@@ -52,3 +52,8 @@ Events are stored in the `alerts.events` collection with schema validation enabl
 ## Notes for future sources
 
 HCES is source-agnostic by design. New log sources should map into the same top-level structure without schema redesign, and must preserve original payloads in `raw_event`.
+
+<img width="1202" height="611" alt="image" src="https://github.com/user-attachments/assets/6a416349-1d52-4d76-b9d5-4cb4a3fee4ff" />
+<img width="1197" height="602" alt="image" src="https://github.com/user-attachments/assets/700a3b2b-c56e-40b7-a109-a3f72b0cbb8c" />
+<img width="1208" height="621" alt="image" src="https://github.com/user-attachments/assets/860280c8-57d0-4778-a096-46d8c3b7df4a" />
+<img width="1527" height="778" alt="image" src="https://github.com/user-attachments/assets/2593151b-1fed-4b2f-b90e-6504fe491673" />
