@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import uuid
@@ -38,6 +39,10 @@ from heimdall.suricata import list_interfaces, start_suricata, stop_suricata, su
 from heimdall.tailer import LogTailer
 
 app = Flask(__name__, template_folder="template")
+
+ANGULAR_DIST = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "frontend", "dist", "heimdall", "browser"
+)
 
 alerts: Deque[Dict] = deque(maxlen=ALERT_BUFFER_SIZE)
 alert_id = 0
@@ -146,6 +151,34 @@ def require_auth(required_role: Optional[str] = None):
 
 
 @app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = app.make_default_options_response()
+        origin = request.headers.get("Origin", "")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, Authorization, Last-Event-ID, Cache-Control"
+            )
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin", "")
+    if origin.startswith("http://localhost"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, Last-Event-ID, Cache-Control"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+
+@app.before_request
 def enforce_api_auth():
     path = request.path
     if not path.startswith("/api/"):
@@ -157,6 +190,10 @@ def enforce_api_auth():
 
 @app.route("/")
 def index():
+    if os.path.isdir(ANGULAR_DIST) and os.path.isfile(
+        os.path.join(ANGULAR_DIST, "index.html")
+    ):
+        return send_from_directory(ANGULAR_DIST, "index.html")
     return render_template(
         "index.html",
         default_config=DEFAULT_CONFIG,
@@ -172,6 +209,22 @@ def favicon():
 @app.route("/hsoclogo.png")
 def hsoc_logo():
     return send_from_directory(app.root_path, "hsoclogo.png")
+
+
+@app.route("/<path:path>")
+def catch_all(path):
+    """Serve Angular static assets or fall back to index.html for client-side routing."""
+    if os.path.isdir(ANGULAR_DIST):
+        full = os.path.join(ANGULAR_DIST, path)
+        if os.path.isfile(full):
+            return send_from_directory(ANGULAR_DIST, path)
+        if os.path.isfile(os.path.join(ANGULAR_DIST, "index.html")):
+            return send_from_directory(ANGULAR_DIST, "index.html")
+    return render_template(
+        "index.html",
+        default_config=DEFAULT_CONFIG,
+        current_log_type=current_log_type,
+    )
 
 
 @app.route("/api/status")
@@ -488,6 +541,46 @@ def api_close_incident(incident_id: str):
             pass
 
     return jsonify({"status": "closed", "incident_id": incident_id})
+
+
+# ── AI Copilot endpoint ──────────────────────────────────────────────
+@app.route("/api/v1/copilot/assess", methods=["POST"])
+@require_auth()
+def api_copilot_assess():
+    """Accept an array of log/event objects and return a structured
+    AI-generated threat assessment.  This stub returns a deterministic
+    mock response so the frontend can be developed independently;
+    replace the body with a real Gemini / LLM call when the backend
+    integration is ready."""
+    logs = request.get_json(silent=True)
+    if not logs or not isinstance(logs, list):
+        return jsonify({"status": "error", "message": "payload must be a non-empty JSON array"}), 400
+
+    # ── Determine a mock severity from the lowest (most critical) event severity ──
+    severities = []
+    for log in logs:
+        ev = log.get("event", {}) if isinstance(log, dict) else {}
+        s = ev.get("severity")
+        if isinstance(s, (int, float)):
+            severities.append(int(s))
+    min_sev = min(severities) if severities else 3
+    sev_map = {1: "Critical", 2: "High", 3: "Medium", 4: "Low"}
+    severity_label = sev_map.get(min_sev, "Medium")
+
+    # ── Build a deterministic stub response (mirrors the data contract) ──
+    result = {
+        "severity": severity_label,
+        "mitre_tactic": "Command and Control",
+        "mitre_technique": "Application Layer Protocol",
+        "confidence_score": 85 if severity_label in ("Critical", "High") else 60,
+        "justification": (
+            f"Analysis of {len(logs)} selected log(s): the observed traffic patterns—"
+            f"including signature matches and destination profiling—are consistent "
+            f"with {severity_label.lower()}-severity threat activity. "
+            f"Further investigation of the involved hosts is recommended."
+        ),
+    }
+    return jsonify(result)
 
 
 @app.route("/api/rules", methods=["GET", "PUT"])

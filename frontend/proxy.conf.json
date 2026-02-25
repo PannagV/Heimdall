@@ -1,0 +1,15 @@
+{
+  "/api": {
+    "target": "http://localhost:5000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/icon.png": {
+    "target": "http://localhost:5000",
+    "secure": false
+  },
+  "/hsoclogo.png": {
+    "target": "http://localhost:5000",
+    "secure": false
+  }
+}
