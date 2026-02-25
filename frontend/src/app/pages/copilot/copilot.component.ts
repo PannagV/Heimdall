@@ -18,8 +18,8 @@ import { ApiService } from '../../services/api.service';
     <!-- ───── Header ───── -->
     <div class="panel-header animate-fade-in">
       <div>
-        <h2>AI SOC Copilot</h2>
-        <p>Select security events and let the AI assess the threat level, MITRE mapping, and justification.</p>
+        <h2>Suricata Logs</h2>
+        <p>Select security events and let the AI assess the threat level, MITRE mapping, and justification - Powered by Gemini .</p>
       </div>
       <div class="header-actions">
         <span class="pill">{{ selectedCount() }} selected</span>

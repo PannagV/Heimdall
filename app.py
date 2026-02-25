@@ -622,7 +622,7 @@ def api_copilot_assess():
         return jsonify({"status": "error", "message": "payload must be a non-empty JSON array"}), 400
 
     api_key = DEFAULT_CONFIG.get("gemini_api_key", "")
-    model_name = DEFAULT_CONFIG.get("gemini_model", "gemini-2.0-flash")
+    model_name = DEFAULT_CONFIG.get("gemini_model", "gemini-2.5-flash")
 
     if not api_key:
         return jsonify({"status": "error", "message": "GEMINI_API_KEY is not configured on the server"}), 503

@@ -277,7 +277,7 @@ export class LayoutComponent implements OnInit, OnDestroy {
       subtitle: 'Review and update correlation rules in real time',
     },
     '/copilot': {
-      title: 'AI SOC Copilot',
+      title: 'AI-assisted Log Analysis',
       subtitle: 'AI-powered threat assessment and MITRE ATT&CK mapping',
     },
   };
