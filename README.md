@@ -2,7 +2,7 @@
 
 Heimdall is a Linux-based SIEM focused on collecting Suricata network security events, normalizing them into a consistent JSON format, and storing them in MongoDB for search, dashboards, and incident workflows.
 
-The project runs a small web application that can start and stop Suricata, tail Suricata logs in real time, parse and normalize events, and expose the latest alerts and stored events through a UI and API.
+It tails Suricata logs in real time, parse and normalize events, and expose the latest alerts and stored events through a UI and API.
 
 ## Core features
 
