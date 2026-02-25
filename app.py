@@ -543,44 +543,110 @@ def api_close_incident(incident_id: str):
     return jsonify({"status": "closed", "incident_id": incident_id})
 
 
-# ── AI Copilot endpoint ──────────────────────────────────────────────
+# ── AI Copilot endpoint (Google Gemini) ──────────────────────────────
+
+def _build_gemini_prompt(logs: list) -> str:
+    """Build the system+user prompt that instructs Gemini to return
+    a strictly-typed JSON assessment."""
+    logs_json = json.dumps(logs, indent=2, default=str)
+    return (
+        "You are an expert SOC (Security Operations Centre) analyst AI.\n"
+        "Analyse the following security log events and produce a single \n"
+        "JSON object with EXACTLY these keys:\n"
+        "  severity        – one of: \"Low\", \"Medium\", \"High\", \"Critical\"\n"
+        "  mitre_tactic    – the most relevant MITRE ATT&CK tactic name\n"
+        "  mitre_technique – the most relevant MITRE ATT&CK technique name\n"
+        "  confidence_score – integer 0-100 expressing your confidence\n"
+        "  justification   – a concise paragraph explaining your assessment\n\n"
+        "Rules:\n"
+        "• Return ONLY the JSON object, no markdown fences, no extra text.\n"
+        "• Derive severity from the signatures, IPs, ports, and protocols.\n"
+        "• Reference specific log details in the justification.\n\n"
+        f"=== LOGS ({len(logs)} events) ===\n"
+        f"{logs_json}\n"
+    )
+
+
+def _parse_gemini_response(text: str) -> dict:
+    """Extract the JSON object from Gemini's response text, handling
+    possible markdown fences or surrounding prose."""
+    cleaned = text.strip()
+    # Strip markdown code fences if present
+    if cleaned.startswith("```"):
+        # Remove opening fence (```json or ```)
+        first_nl = cleaned.index("\n") if "\n" in cleaned else 3
+        cleaned = cleaned[first_nl + 1 :]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[: -3]
+    cleaned = cleaned.strip()
+
+    parsed = json.loads(cleaned)
+
+    # Validate / coerce to the expected contract
+    valid_severities = {"Low", "Medium", "High", "Critical"}
+    sev = parsed.get("severity", "Medium")
+    if sev not in valid_severities:
+        # Try title-casing
+        sev = sev.strip().title()
+        if sev not in valid_severities:
+            sev = "Medium"
+    parsed["severity"] = sev
+
+    score = parsed.get("confidence_score", 50)
+    try:
+        score = int(score)
+    except (ValueError, TypeError):
+        score = 50
+    parsed["confidence_score"] = max(0, min(100, score))
+
+    parsed.setdefault("mitre_tactic", "Unknown")
+    parsed.setdefault("mitre_technique", "Unknown")
+    parsed.setdefault("justification", "No justification provided.")
+
+    return {
+        "severity": parsed["severity"],
+        "mitre_tactic": str(parsed["mitre_tactic"]),
+        "mitre_technique": str(parsed["mitre_technique"]),
+        "confidence_score": parsed["confidence_score"],
+        "justification": str(parsed["justification"]),
+    }
+
+
 @app.route("/api/v1/copilot/assess", methods=["POST"])
 @require_auth()
 def api_copilot_assess():
-    """Accept an array of log/event objects and return a structured
-    AI-generated threat assessment.  This stub returns a deterministic
-    mock response so the frontend can be developed independently;
-    replace the body with a real Gemini / LLM call when the backend
-    integration is ready."""
+    """Accept an array of log/event objects, send them to Google Gemini
+    for analysis, and return a structured CopilotAssessment JSON."""
     logs = request.get_json(silent=True)
     if not logs or not isinstance(logs, list):
         return jsonify({"status": "error", "message": "payload must be a non-empty JSON array"}), 400
 
-    # ── Determine a mock severity from the lowest (most critical) event severity ──
-    severities = []
-    for log in logs:
-        ev = log.get("event", {}) if isinstance(log, dict) else {}
-        s = ev.get("severity")
-        if isinstance(s, (int, float)):
-            severities.append(int(s))
-    min_sev = min(severities) if severities else 3
-    sev_map = {1: "Critical", 2: "High", 3: "Medium", 4: "Low"}
-    severity_label = sev_map.get(min_sev, "Medium")
+    api_key = DEFAULT_CONFIG.get("gemini_api_key", "")
+    model_name = DEFAULT_CONFIG.get("gemini_model", "gemini-2.0-flash")
 
-    # ── Build a deterministic stub response (mirrors the data contract) ──
-    result = {
-        "severity": severity_label,
-        "mitre_tactic": "Command and Control",
-        "mitre_technique": "Application Layer Protocol",
-        "confidence_score": 85 if severity_label in ("Critical", "High") else 60,
-        "justification": (
-            f"Analysis of {len(logs)} selected log(s): the observed traffic patterns—"
-            f"including signature matches and destination profiling—are consistent "
-            f"with {severity_label.lower()}-severity threat activity. "
-            f"Further investigation of the involved hosts is recommended."
-        ),
-    }
-    return jsonify(result)
+    if not api_key:
+        return jsonify({"status": "error", "message": "GEMINI_API_KEY is not configured on the server"}), 503
+
+    # ── Call Google Gemini ──
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+
+        prompt = _build_gemini_prompt(logs)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+
+        result = _parse_gemini_response(response.text)
+        return jsonify(result)
+
+    except json.JSONDecodeError:
+        return jsonify({"status": "error", "message": "Gemini returned a response that could not be parsed as JSON"}), 502
+    except Exception as exc:
+        app.logger.error("Gemini API error: %s", exc)
+        return jsonify({"status": "error", "message": f"Gemini API error: {str(exc)}"}), 502
 
 
 @app.route("/api/rules", methods=["GET", "PUT"])

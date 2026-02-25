@@ -55,6 +55,9 @@ DEFAULT_CONFIG = {
     "slack_webhook_url": os.environ.get("SLACK_WEBHOOK_URL", ""),
     "slack_channel": os.environ.get("SLACK_CHANNEL", ""),
     "integration_min_priority": os.environ.get("INTEGRATION_MIN_PRIORITY", "medium"),
+    # ── Google Gemini AI Copilot ──
+    "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
+    "gemini_model": os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
 }
 
 ALERT_BUFFER_SIZE = 500

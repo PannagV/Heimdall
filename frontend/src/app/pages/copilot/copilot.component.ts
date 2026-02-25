@@ -1,6 +1,7 @@
-import { Component, inject, signal, computed } from '@angular/core';
+import { Component, inject, signal, computed, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { CopilotService, CopilotAssessment } from '../../services/copilot.service';
+import { ApiService } from '../../services/api.service';
 
 /* ──────────────────────────────────────────────────────────────
    AiCopilotComponent – "AI SOC Copilot"
@@ -22,6 +23,9 @@ import { CopilotService, CopilotAssessment } from '../../services/copilot.servic
       </div>
       <div class="header-actions">
         <span class="pill">{{ selectedCount() }} selected</span>
+        <button class="btn btn-ghost btn-sm" (click)="refreshLogs()">
+          ↻ Refresh
+        </button>
         <button class="btn btn-ghost btn-sm" (click)="toggleSelectAll()">
           {{ allSelected() ? 'Deselect All' : 'Select All' }}
         </button>
@@ -80,6 +84,16 @@ import { CopilotService, CopilotAssessment } from '../../services/copilot.servic
                   <td class="mono">{{ log.source?.ip || '—' }}</td>
                   <td class="mono">{{ log.destination?.ip || '—' }}</td>
                   <td>{{ log.network?.transport || '—' }}</td>
+                </tr>
+              }
+              @if (logsLoading()) {
+                <tr>
+                  <td colspan="7" class="empty-state animate-pulse">⚡ Loading events from database…</td>
+                </tr>
+              }
+              @if (!logsLoading() && logs().length === 0) {
+                <tr>
+                  <td colspan="7" class="empty-state">No events found. Run Suricata to generate data.</td>
                 </tr>
               }
             </tbody>
@@ -442,18 +456,51 @@ import { CopilotService, CopilotAssessment } from '../../services/copilot.servic
     }
   `],
 })
-export class AiCopilotComponent {
+export class AiCopilotComponent implements OnInit {
   private copilotService = inject(CopilotService);
+  private apiService = inject(ApiService);
 
   /* ── state signals ── */
-  logs      = signal<any[]>(MOCK_LOGS);      // seed with mock data for UI testing
-  loading   = signal(false);
-  error     = signal('');
-  result    = signal<CopilotAssessment | null>(null);
+  logs           = signal<any[]>([]);          // populated from MongoDB on init
+  loading        = signal(false);
+  logsLoading    = signal(true);              // true while fetching events
+  error          = signal('');
+  result         = signal<CopilotAssessment | null>(null);
 
   /* ── computed helpers ── */
   selectedCount = computed(() => this.logs().filter(l => l._selected).length);
   allSelected   = computed(() => this.logs().length > 0 && this.logs().every(l => l._selected));
+
+  /**
+   * On init, fetch real events from MongoDB via /api/events.
+   * Falls back to built-in mock data when the DB returns nothing
+   * (e.g. fresh install with no Suricata data yet).
+   */
+  ngOnInit(): void {
+    this.logsLoading.set(true);
+    this.apiService.getEvents(500).subscribe({
+      next: (data) => {
+        const events = (data.events || []).map((ev: any, idx: number) => ({
+          ...ev,
+          _id: ev.event_id || ev._id || `ev-${idx}`,
+          _selected: false,
+        }));
+        // Use real events if available, otherwise fall back to mocks
+        this.logs.set(events.length > 0 ? events : MOCK_LOGS);
+        this.logsLoading.set(false);
+      },
+      error: () => {
+        // API unreachable → load mocks so the UI is still usable
+        this.logs.set(MOCK_LOGS);
+        this.logsLoading.set(false);
+      },
+    });
+  }
+
+  /** Re-fetch events from MongoDB (called by the ↻ Refresh button) */
+  refreshLogs(): void {
+    this.ngOnInit();
+  }
 
   /** Toggle selection on a single log row */
   toggleLog(log: any): void {
