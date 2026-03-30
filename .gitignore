@@ -3,3 +3,6 @@
 heimdall/.env
 venv
 .github
+__pycache__
+venv/*
+heimdall/__pycache__
