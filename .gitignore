@@ -8,5 +8,5 @@ __pycache__
 venv/*
 heimdall/__pycache__
 heimdall/__pycache__/*
-.env.example
+
 
