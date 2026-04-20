@@ -31,6 +31,7 @@ from heimdall.hces import (
     parse_fast_line,
     validate_hces_event,
 )
+from heimdall.event_query import QuerySyntaxError, parse_event_search_query
 from heimdall.metrics import get_metrics
 from heimdall.integrations import JiraSlackIntegration
 from heimdall.storage import init_mongo
@@ -437,6 +438,83 @@ def api_events():
     except PyMongoError:
         events = []
     return jsonify({"events": events})
+
+
+@app.route("/api/events/search")
+@require_auth("viewer")
+def api_events_search():
+    if events_collection is None:
+        return jsonify({"events": [], "query_meta": {"query": ""}})
+
+    query = (request.args.get("q") or "").strip()
+    default_limit = request.args.get("limit", type=int, default=200)
+    default_limit = max(1, min(default_limit, 1000))
+
+    if len(query) > 4000:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "query is too long",
+                    "position": 4000,
+                }
+            ),
+            400,
+        )
+
+    try:
+        parsed = parse_event_search_query(
+            query,
+            default_limit=default_limit,
+            max_limit=1000,
+        )
+    except QuerySyntaxError as exc:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": exc.message,
+                    "position": exc.position,
+                }
+            ),
+            400,
+        )
+
+    try:
+        with mongo_lock:
+            cursor = (
+                events_collection.find(parsed.mongo_filter, parsed.projection)
+                .sort(parsed.sort)
+                .skip(parsed.offset)
+                .limit(parsed.limit)
+            )
+            events = list(cursor)
+    except PyMongoError:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "failed to execute query",
+                }
+            ),
+            500,
+        )
+
+    query_meta = {
+        "query": query,
+        "limit": parsed.limit,
+        "offset": parsed.offset,
+        "sort": [
+            {
+                "field": field,
+                "direction": "desc" if direction < 0 else "asc",
+            }
+            for field, direction in parsed.sort
+        ],
+        "selected_fields": parsed.selected_fields,
+    }
+
+    return jsonify({"events": events, "query_meta": query_meta})
 
 
 @app.route("/api/incidents")

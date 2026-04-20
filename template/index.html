@@ -166,6 +166,20 @@
           </div>
         </section>
 
+        <section class="query-bar" aria-label="Events query bar">
+          <input
+            id="eventsQueryInput"
+            class="query-input"
+            type="text"
+            placeholder='severity >= 4 AND source.ip = "10.10.5.7" ORDER BY timestamp DESC LIMIT 100'
+          />
+          <button id="runEventsQueryBtn" class="primary">Search</button>
+          <button id="clearEventsQueryBtn" class="ghost">Clear</button>
+        </section>
+        <div id="eventsQueryStatus" class="query-status">
+          Query all events, or filter with SQL-like syntax.
+        </div>
+
         <div class="split-grid">
           <div class="dashboard-card">
             <div class="table-header">

@@ -106,6 +106,98 @@ Heimdall supports two Suricata log formats:
 
 Severity is normalized to a 1–5 scale for consistent filtering and reporting.
 
+## Event search query language (SQL-like)
+
+Heimdall includes a SQL-like query language for the Events table and `/api/events/search` endpoint. The query parser compiles your expression into a safe MongoDB filter over HCES fields.
+
+For a focused reference, see `QUERY_LANGUAGE_README.md`.
+
+### Supported query forms
+
+- Short form (most common):
+  - `severity >= 4 AND source.ip = "10.10.5.7" ORDER BY timestamp DESC LIMIT 100`
+- Full SQL-like form:
+  - `SELECT timestamp, alert.signature, source.ip FROM events WHERE severity >= 3 ORDER BY timestamp DESC LIMIT 200 OFFSET 0`
+
+`FROM` currently supports only `events`.
+
+### Clauses
+
+- `SELECT field1, field2` or `SELECT *`
+- `FROM events`
+- Optional `WHERE ...`
+- Optional `ORDER BY field [ASC|DESC]`
+- Optional `LIMIT n`
+- Optional `OFFSET n`
+
+When `SELECT` is omitted, Heimdall assumes short-form filtering on events.
+
+### Operators
+
+- Comparison: `=`, `!=`, `>`, `>=`, `<`, `<=`
+- Logical: `AND`, `OR`, `NOT`, and parentheses
+- Text: `LIKE` (supports SQL wildcards `%` and `_`, case-insensitive)
+- Set: `IN (value1, value2, ...)`
+- Null checks: `IS NULL`, `IS NOT NULL`
+- Arrays: `CONTAINS` (for array fields like categories/types)
+
+### Supported fields and aliases
+
+- Core event:
+  - `timestamp`, `event_id`, `source_type`
+  - `kind` (alias of `event.kind`)
+  - `severity` (alias of `event.severity`)
+  - `outcome` (alias of `event.outcome`)
+  - `category` (alias of `event.category`, array)
+  - `type` (alias of `event.type`, array)
+- Source / destination:
+  - `source.ip` (alias `src_ip`)
+  - `source.port` (alias `src_port`)
+  - `destination.ip` (alias `dst_ip`)
+  - `destination.port` (alias `dst_port`)
+- Network:
+  - `network.protocol` (alias `protocol`)
+  - `network.transport` (alias `transport`)
+- Alert:
+  - `alert.id`
+  - `alert.signature` (alias `signature`)
+  - `alert.category`
+  - `alert.severity`
+- Incident:
+  - `incident.id`
+  - `incident.incident_id` (alias `incident_id`)
+
+### Literal values
+
+- Strings can be quoted with single or double quotes.
+- Bare words are accepted (`kind = alert`).
+- Numeric values are accepted for integer fields.
+- `NULL` is valid only with `IS NULL` / `IS NOT NULL`.
+
+### Examples
+
+- `severity >= 4 AND kind = "alert" ORDER BY timestamp DESC LIMIT 100`
+- `source.ip = "192.168.1.10" AND destination.port IN (22, 3389)`
+- `signature LIKE "%ET TROJAN%" AND timestamp >= "2026-04-20T00:00:00Z"`
+- `category CONTAINS intrusion AND protocol = tcp`
+- `SELECT timestamp, severity, signature, src_ip FROM events WHERE severity >= 3 ORDER BY timestamp DESC LIMIT 50`
+
+### API
+
+- Endpoint: `GET /api/events/search`
+- Query params:
+  - `q`: query string
+  - `limit`: default limit when `LIMIT` is not in the query
+- Responses:
+  - `200`: `{ "events": [...], "query_meta": {...} }`
+  - `400`: syntax/validation error with `{ "message": "...", "position": n }`
+
+### Notes and constraints
+
+- Unknown fields or invalid operator/field combinations are rejected.
+- `JOIN`, subqueries, and non-`events` sources are not supported.
+- `LIMIT` is bounded server-side to prevent expensive queries.
+
 ## Environment variables
 
 Configuration is driven primarily by environment variables:

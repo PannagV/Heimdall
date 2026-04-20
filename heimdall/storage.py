@@ -74,11 +74,19 @@ def init_mongo(
 
     try:
         events_collection.create_index("timestamp")
+        events_collection.create_index("event.kind")
+        events_collection.create_index("event.category")
         events_collection.create_index("source.ip")
         events_collection.create_index("destination.ip")
+        events_collection.create_index("network.protocol")
         events_collection.create_index("event.severity")
         events_collection.create_index("alert.id")
+        events_collection.create_index("alert.signature")
+        events_collection.create_index("alert.category")
         events_collection.create_index("incident.id")
+        events_collection.create_index([("event.kind", 1), ("timestamp", -1)])
+        events_collection.create_index([("source.ip", 1), ("timestamp", -1)])
+        events_collection.create_index([("destination.ip", 1), ("timestamp", -1)])
     except PyMongoError:
         pass
 

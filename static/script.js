@@ -31,6 +31,10 @@ const incidentsTableBody = document.querySelector('#incidentsTable tbody');
 const eventCountEl = document.getElementById('eventCount');
 const incidentCountEl = document.getElementById('incidentCount');
 const refreshEventsBtn = document.getElementById('refreshEventsBtn');
+const eventsQueryInput = document.getElementById('eventsQueryInput');
+const runEventsQueryBtn = document.getElementById('runEventsQueryBtn');
+const clearEventsQueryBtn = document.getElementById('clearEventsQueryBtn');
+const eventsQueryStatus = document.getElementById('eventsQueryStatus');
 
 const rulesEditor = document.getElementById('rulesEditor');
 const rulesPathEl = document.getElementById('rulesPath');
@@ -69,6 +73,8 @@ let lastStreamMessageAt = 0;
 let priorityChart = null;
 let classificationChart = null;
 let hourlyChart = null;
+
+let currentEventsQuery = '';
 
 const chartPalette = ['#6ee7ff', '#a855f7', '#f97316', '#22c55e', '#facc15'];
 
@@ -422,6 +428,12 @@ function formatIncidentBadge(incident) {
   return incident.id || incident.incident_id || '-';
 }
 
+function setEventsQueryStatus(message, isError = false) {
+  if (!eventsQueryStatus) return;
+  eventsQueryStatus.textContent = message;
+  eventsQueryStatus.classList.toggle('error', isError);
+}
+
 function renderEvents(events) {
   if (!eventsTableBody) return;
   eventsTableBody.innerHTML = '';
@@ -488,11 +500,39 @@ function renderIncidents(incidents) {
 
 async function fetchEvents() {
   try {
-    const res = await authFetch('/api/events?limit=200');
+    const query = (eventsQueryInput?.value || currentEventsQuery || '').trim();
+    currentEventsQuery = query;
+
+    const endpoint = query ? '/api/events/search' : '/api/events';
+    const params = new URLSearchParams({ limit: '200' });
+    if (query) {
+      params.set('q', query);
+    }
+
+    const res = await authFetch(`${endpoint}?${params.toString()}`);
     const data = await res.json();
+
+    if (!res.ok) {
+      const position = Number.isInteger(data.position) ? data.position + 1 : null;
+      const suffix = position ? ` (at character ${position})` : '';
+      setEventsQueryStatus(`${data.message || 'Search failed.'}${suffix}`, true);
+      renderEvents([]);
+      return;
+    }
+
     renderEvents(data.events || []);
+
+    if (query) {
+      const sortSummary = (data.query_meta?.sort || [])
+        .map(item => `${item.field} ${item.direction.toUpperCase()}`)
+        .join(', ');
+      const details = sortSummary ? ` Sorted by ${sortSummary}.` : '';
+      setEventsQueryStatus(`Showing ${data.events?.length || 0} matching events.${details}`);
+    } else {
+      setEventsQueryStatus('Showing latest events (default sort by timestamp DESC).');
+    }
   } catch (err) {
-    // ignore
+    setEventsQueryStatus('Failed to load events.', true);
   }
 }
 
@@ -847,6 +887,30 @@ if (refreshEventsBtn) {
   refreshEventsBtn.addEventListener('click', () => {
     fetchEvents();
     fetchIncidents();
+  });
+}
+
+if (runEventsQueryBtn) {
+  runEventsQueryBtn.addEventListener('click', () => {
+    fetchEvents();
+  });
+}
+
+if (clearEventsQueryBtn) {
+  clearEventsQueryBtn.addEventListener('click', () => {
+    if (eventsQueryInput) {
+      eventsQueryInput.value = '';
+    }
+    currentEventsQuery = '';
+    fetchEvents();
+  });
+}
+
+if (eventsQueryInput) {
+  eventsQueryInput.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    fetchEvents();
   });
 }
 

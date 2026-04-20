@@ -442,6 +442,35 @@ button:not(.primary):not(.ghost) {
   align-items: center;
 }
 
+.query-bar {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.query-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+  background: #050505;
+  color: #ffffff;
+  font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.query-status {
+  margin-top: 10px;
+  color: #cfcfcf;
+  font-size: 12px;
+}
+
+.query-status.error {
+  color: #ffb3b3;
+}
+
 .pill {
   padding: 6px 12px;
   border-radius: 999px;
@@ -565,6 +594,10 @@ button:not(.primary):not(.ghost) {
 
 @media (max-width: 860px) {
   .login-card {
+    grid-template-columns: 1fr;
+  }
+
+  .query-bar {
     grid-template-columns: 1fr;
   }
 }
