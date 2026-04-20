@@ -50,6 +50,8 @@ Core event:
 - `timestamp`
 - `event_id`
 - `source_type`
+- `machine.id` (alias `machine_id`)
+- `machine.name` (alias `machine_name`)
 - `kind` (alias of `event.kind`)
 - `severity` (alias of `event.severity`)
 - `outcome` (alias of `event.outcome`)
@@ -111,6 +113,10 @@ FROM events
 WHERE severity >= 3
 ORDER BY timestamp DESC
 LIMIT 50
+```
+
+```sql
+machine_id = "branch-sensor-01" AND machine_name LIKE "branch-%"
 ```
 
 ## API response shape

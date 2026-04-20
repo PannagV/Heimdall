@@ -1,0 +1,14 @@
+{
+  "server_url": "http://HEIMDALL_SERVER:5000",
+  "shared_secret": "replace-with-agent-shared-secret",
+  "log_path": "/var/log/suricata/eve.json",
+  "log_type": "eve.json",
+  "machine_id": "",
+  "machine_name": "",
+  "machine_group": "",
+  "batch_size": 100,
+  "flush_interval_seconds": 2,
+  "request_timeout_seconds": 10,
+  "verify_tls": true,
+  "state_file": "~/.heimdall-agent-id"
+}

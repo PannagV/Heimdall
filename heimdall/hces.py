@@ -22,6 +22,7 @@ HCES_MONGO_VALIDATOR = {
             "event",
             "source_type",
             "sensor",
+            "machine",
             "raw_event",
         ],
         "properties": {
@@ -47,6 +48,15 @@ HCES_MONGO_VALIDATOR = {
                     "id": {"bsonType": "string"},
                     "type": {"bsonType": "string"},
                     "hostname": {"bsonType": "string"},
+                },
+            },
+            "machine": {
+                "bsonType": "object",
+                "required": ["id", "name"],
+                "properties": {
+                    "id": {"bsonType": "string"},
+                    "name": {"bsonType": "string"},
+                    "group": {"bsonType": "string"},
                 },
             },
             "source": {"bsonType": "object"},
@@ -86,6 +96,7 @@ def load_hces_schema() -> Dict:
                 "event",
                 "source_type",
                 "sensor",
+                "machine",
                 "raw_event",
             ],
             "properties": {
@@ -95,6 +106,7 @@ def load_hces_schema() -> Dict:
                 "event": {"type": "object"},
                 "source_type": {"type": "string"},
                 "sensor": {"type": "object"},
+                "machine": {"type": "object"},
                 "raw_event": {"type": "object"},
             },
             "additionalProperties": True,
@@ -185,6 +197,13 @@ def build_sensor_context() -> Dict:
         "id": DEFAULT_CONFIG["sensor_id"],
         "type": "ids",
         "hostname": DEFAULT_CONFIG["sensor_hostname"],
+    }
+
+
+def build_machine_context(machine_id: Optional[str] = None, machine_name: Optional[str] = None) -> Dict:
+    return {
+        "id": machine_id or DEFAULT_CONFIG["sensor_id"],
+        "name": machine_name or DEFAULT_CONFIG["sensor_hostname"],
     }
 
 
@@ -281,6 +300,7 @@ def build_hces_base(
         },
         "source_type": "suricata",
         "sensor": build_sensor_context(),
+        "machine": build_machine_context(),
         "raw_event": {
             "source": "suricata",
             "data": raw_data,

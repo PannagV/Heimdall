@@ -15,6 +15,11 @@ It tails Suricata logs in real time, parse and normalize events, and expose the 
   - A background tailer follows the selected Suricata log file and handles log rotation.
   - Each new line is parsed and converted into a normalized event structure.
 
+- **Remote agent ingestion (Phase 1)**
+  - Remote machines can run the scripts in `agent/` to tail Suricata logs and submit batched events to `POST /api/agent/events`.
+  - Requests are authenticated with an HMAC signature using `AGENT_SHARED_SECRET`.
+  - Replay protection and timestamp skew checks are enforced server-side.
+
 - **Normalization with HCES**
   - Events are normalized into the **Heimdall Common Event Schema (HCES)**.
   - Each stored document includes:
@@ -83,9 +88,9 @@ The Copilot is designed as a decoupled feature:
 HCES is designed to keep event storage consistent across sources while still preserving the original payload.
 
 - Required top-level fields include:
-  - `event_id`, `timestamp`, `ingested_at`, `event`, `source_type`, `sensor`, `raw_event`
+  - `event_id`, `timestamp`, `ingested_at`, `event`, `source_type`, `sensor`, `machine`, `raw_event`
 - Common optional blocks:
-  - `source`, `destination`, `network`, `alert`, `file`, `incident`, `threat`
+  - `machine`, `source`, `destination`, `network`, `alert`, `file`, `incident`, `threat`
 
 The schema definition lives in [hces_schema.json](hces_schema.json).
 
@@ -145,6 +150,8 @@ When `SELECT` is omitted, Heimdall assumes short-form filtering on events.
 
 - Core event:
   - `timestamp`, `event_id`, `source_type`
+  - `machine.id` (alias `machine_id`)
+  - `machine.name` (alias `machine_name`)
   - `kind` (alias of `event.kind`)
   - `severity` (alias of `event.severity`)
   - `outcome` (alias of `event.outcome`)
@@ -209,6 +216,11 @@ Configuration is driven primarily by environment variables:
 - `MONGO_URI` (default: `mongodb://localhost:27017`)
 - `HEIMDALL_SENSOR_ID` (default: `sensor-1`)
 - `HEIMDALL_SENSOR_HOSTNAME` (default: system hostname)
+- `AGENT_SHARED_SECRET` (required to accept remote agent events)
+- `AGENT_MAX_BATCH_SIZE` (default: `200`)
+- `AGENT_MAX_CLOCK_SKEW_SECONDS` (default: `300`)
+- `AGENT_NONCE_TTL_SECONDS` (default: `900`)
+- `AGENT_RATE_LIMIT_PER_MIN` (default: `120`)
 
 Correlation, authentication, and integration settings are also configurable (for example rule path, token settings, Jira, and Slack).
 

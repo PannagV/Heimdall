@@ -9,6 +9,7 @@ DEFAULT_EVENT_PROJECTION: Dict[str, int] = {
     "event_id": 1,
     "timestamp": 1,
     "event": 1,
+    "machine": 1,
     "source": 1,
     "destination": 1,
     "network": 1,
@@ -97,6 +98,8 @@ def _build_field_specs() -> Dict[str, FieldSpec]:
     register(("event_id",), "event_id", "string", string_ops)
     register(("timestamp",), "timestamp", "string", string_ops)
     register(("source_type",), "source_type", "string", string_ops)
+    register(("machine.id", "machine_id"), "machine.id", "string", string_ops)
+    register(("machine.name", "machine_name"), "machine.name", "string", string_ops)
 
     register(("kind", "event.kind"), "event.kind", "string", string_ops)
     register(("category", "event.category"), "event.category", "array_string", array_ops, sortable=False)

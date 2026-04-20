@@ -9,6 +9,7 @@
     "event",
     "source_type",
     "sensor",
+    "machine",
     "raw_event"
   ],
   "properties": {
@@ -35,6 +36,16 @@
         "id": { "type": "string" },
         "type": { "type": "string" },
         "hostname": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "machine": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "group": { "type": "string" }
       },
       "additionalProperties": true
     },

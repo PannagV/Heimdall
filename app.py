@@ -1,4 +1,6 @@
 import json
+import hashlib
+import hmac
 import threading
 import time
 import uuid
@@ -62,6 +64,8 @@ incident_closer: Optional[IncidentCloser] = None
 
 auth_lock = threading.Lock()
 auth_rate_limits: Dict[str, Dict] = {}
+agent_nonce_lock = threading.Lock()
+agent_nonces: Dict[str, float] = {}
 
 
 def push_alert(event: Dict) -> None:
@@ -122,6 +126,82 @@ def rate_limit(key: str, limit: int) -> bool:
         return True
 
 
+def apply_machine_identity(
+    event: Dict,
+    machine_id: str,
+    machine_name: str,
+    machine_group: Optional[str] = None,
+) -> Dict:
+    machine = {
+        "id": machine_id,
+        "name": machine_name,
+    }
+    if machine_group:
+        machine["group"] = machine_group
+    event["machine"] = machine
+
+    sensor = event.get("sensor") if isinstance(event.get("sensor"), dict) else {}
+    sensor["id"] = machine_id
+    sensor["hostname"] = machine_name
+    sensor.setdefault("type", "ids")
+    event["sensor"] = sensor
+    return event
+
+
+def _cleanup_agent_nonces(now_ts: float, ttl_seconds: int) -> None:
+    stale = [key for key, seen_at in agent_nonces.items() if now_ts - seen_at > ttl_seconds]
+    for key in stale:
+        agent_nonces.pop(key, None)
+
+
+def verify_agent_request(raw_body: bytes):
+    secret = (DEFAULT_CONFIG.get("agent_shared_secret") or "").strip()
+    if not secret:
+        return None, (jsonify({"status": "error", "message": "agent ingestion is not configured"}), 503)
+
+    machine_id = (request.headers.get("X-Agent-Id") or "").strip()
+    machine_name = (request.headers.get("X-Agent-Name") or "").strip()
+    timestamp_raw = (request.headers.get("X-Agent-Timestamp") or "").strip()
+    nonce = (request.headers.get("X-Agent-Nonce") or "").strip()
+    signature = (request.headers.get("X-Agent-Signature") or "").strip().lower()
+
+    if not machine_id or not machine_name:
+        return None, (jsonify({"status": "error", "message": "missing machine identity headers"}), 401)
+    if not timestamp_raw or not nonce or not signature:
+        return None, (jsonify({"status": "error", "message": "missing agent auth headers"}), 401)
+
+    if not rate_limit(f"agent:{machine_id}", DEFAULT_CONFIG["agent_rate_limit_per_min"]):
+        return None, (jsonify({"status": "error", "message": "rate limit"}), 429)
+
+    try:
+        timestamp = int(timestamp_raw)
+    except ValueError:
+        return None, (jsonify({"status": "error", "message": "invalid timestamp"}), 401)
+
+    now_ts = int(time.time())
+    max_skew = max(30, int(DEFAULT_CONFIG["agent_max_clock_skew_seconds"]))
+    if abs(now_ts - timestamp) > max_skew:
+        return None, (jsonify({"status": "error", "message": "timestamp skew too large"}), 401)
+
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp_raw}.{nonce}.".encode("utf-8") + raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return None, (jsonify({"status": "error", "message": "invalid signature"}), 401)
+
+    nonce_ttl = max(60, int(DEFAULT_CONFIG["agent_nonce_ttl_seconds"]))
+    nonce_key = f"{machine_id}:{nonce}"
+    with agent_nonce_lock:
+        _cleanup_agent_nonces(float(now_ts), nonce_ttl)
+        if nonce_key in agent_nonces:
+            return None, (jsonify({"status": "error", "message": "replay detected"}), 409)
+        agent_nonces[nonce_key] = float(now_ts)
+
+    return {"machine_id": machine_id, "machine_name": machine_name}, None
+
+
 def require_auth(required_role: Optional[str] = None):
     def decorator(func):
         def wrapper(*args, **kwargs):
@@ -152,6 +232,8 @@ def enforce_api_auth():
     if not path.startswith("/api/"):
         return None
     if path.startswith("/api/auth/"):
+        return None
+    if path.startswith("/api/agent/"):
         return None
     return require_auth()(lambda: None)()
 
@@ -423,6 +505,7 @@ def api_events():
                         "event_id": 1,
                         "timestamp": 1,
                         "event": 1,
+                        "machine": 1,
                         "source": 1,
                         "destination": 1,
                         "network": 1,
@@ -438,6 +521,93 @@ def api_events():
     except PyMongoError:
         events = []
     return jsonify({"events": events})
+
+
+@app.route("/api/agent/events", methods=["POST"])
+def api_agent_events():
+    if events_collection is None:
+        return jsonify({"status": "error", "message": "events collection unavailable"}), 503
+
+    raw_body = request.get_data(cache=True, as_text=False)
+    identity, auth_error = verify_agent_request(raw_body)
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"status": "error", "message": "invalid JSON payload"}), 400
+
+    log_format = (payload.get("format") or "").strip().lower()
+    if log_format not in ("eve.json", "fast.log"):
+        return jsonify({"status": "error", "message": "format must be eve.json or fast.log"}), 400
+
+    events_payload = payload.get("events")
+    if isinstance(events_payload, str):
+        events_payload = [events_payload]
+    if not isinstance(events_payload, list) or not events_payload:
+        return jsonify({"status": "error", "message": "events must be a non-empty array"}), 400
+
+    max_batch_size = max(1, min(int(DEFAULT_CONFIG["agent_max_batch_size"]), 1000))
+    if len(events_payload) > max_batch_size:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"batch too large (max {max_batch_size})",
+                }
+            ),
+            413,
+        )
+
+    machine_group = payload.get("machine_group")
+    if machine_group is not None:
+        machine_group = str(machine_group).strip() or None
+
+    parser = parse_eve_line if log_format == "eve.json" else parse_fast_line
+    accepted = 0
+    rejected = 0
+
+    for item in events_payload:
+        if isinstance(item, dict):
+            raw_line = str(item.get("line") or "")
+        elif isinstance(item, str):
+            raw_line = item
+        else:
+            rejected += 1
+            continue
+
+        line = raw_line.strip()
+        if not line:
+            rejected += 1
+            continue
+
+        parsed = parser(line)
+        if not parsed:
+            rejected += 1
+            continue
+
+        apply_machine_identity(
+            parsed,
+            identity["machine_id"],
+            identity["machine_name"],
+            machine_group,
+        )
+        push_alert(parsed)
+        accepted += 1
+
+    return jsonify(
+        {
+            "status": "ok",
+            "machine": {
+                "id": identity["machine_id"],
+                "name": identity["machine_name"],
+                "group": machine_group,
+            },
+            "format": log_format,
+            "accepted": accepted,
+            "rejected": rejected,
+        }
+    )
 
 
 @app.route("/api/events/search")
