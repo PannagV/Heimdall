@@ -190,6 +190,9 @@
               <table class="data-table" id="eventsTable">
                 <thead>
                   <tr>
+                    <th class="select-col">
+                      <input id="selectAllEvents" type="checkbox" aria-label="Select all events" />
+                    </th>
                     <th>Timestamp</th>
                     <th>Severity</th>
                     <th>Signature</th>
@@ -225,6 +228,21 @@
             </div>
           </div>
         </div>
+
+        <section class="copilot-panel">
+          <div class="copilot-header">
+            <div>
+              <h4>AI Copilot</h4>
+              <p>Analyze selected events for severity and MITRE mapping.</p>
+            </div>
+            <div class="copilot-actions">
+              <span id="copilotSelectedCount" class="pill">0 selected</span>
+              <button id="runCopilotBtn" class="primary" disabled>Run Copilot</button>
+            </div>
+          </div>
+          <div id="copilotStatus" class="copilot-status">Select events to run analysis.</div>
+          <div id="copilotResults" class="copilot-results"></div>
+        </section>
       </section>
 
       <section class="panel" id="rules" data-section="rules">

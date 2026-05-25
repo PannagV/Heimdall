@@ -27,6 +27,7 @@ from heimdall.auth import (
 )
 from heimdall.config import ALERT_BUFFER_SIZE, DEFAULT_CONFIG
 from heimdall.correlation import CorrelationEngine, IncidentCloser
+from heimdall.copilot import CopilotError, COPILOT_EVENT_PROJECTION, analyze_copilot
 from heimdall.hces import (
     init_hces_validator,
     parse_eve_line,
@@ -685,6 +686,71 @@ def api_events_search():
     }
 
     return jsonify({"events": events, "query_meta": query_meta})
+
+
+@app.route("/api/copilot/analyze", methods=["POST"])
+@require_auth("analyst")
+def api_copilot_analyze():
+    if events_collection is None:
+        return jsonify({"status": "error", "message": "events collection unavailable"}), 503
+
+    if not rate_limit(f"copilot:{g.user_id}", DEFAULT_CONFIG["copilot_rate_limit_per_min"]):
+        return jsonify({"status": "error", "message": "rate limit"}), 429
+
+    payload = request.get_json(silent=True) or {}
+    event_ids = payload.get("event_ids")
+    if isinstance(event_ids, str):
+        event_ids = [event_ids]
+    if not isinstance(event_ids, list):
+        return jsonify({"status": "error", "message": "event_ids must be an array"}), 400
+
+    cleaned_ids = []
+    for item in event_ids:
+        if item is None:
+            continue
+        value = str(item).strip()
+        if value:
+            cleaned_ids.append(value)
+
+    if not cleaned_ids:
+        return jsonify({"status": "error", "message": "event_ids cannot be empty"}), 400
+
+    try:
+        with mongo_lock:
+            cursor = events_collection.find(
+                {"event_id": {"$in": cleaned_ids}},
+                COPILOT_EVENT_PROJECTION,
+            )
+            events = list(cursor)
+    except PyMongoError:
+        return jsonify({"status": "error", "message": "failed to load events"}), 500
+
+    event_map = {event.get("event_id"): event for event in events if event.get("event_id")}
+    missing = [event_id for event_id in cleaned_ids if event_id not in event_map]
+    if missing:
+        preview = missing[:5]
+        suffix = "..." if len(missing) > 5 else ""
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"events not found: {', '.join(preview)}{suffix}",
+                    "missing": preview,
+                }
+            ),
+            404,
+        )
+
+    ordered = [event_map[event_id] for event_id in cleaned_ids]
+
+    try:
+        result = analyze_copilot(ordered, cleaned_ids, DEFAULT_CONFIG)
+    except CopilotError as exc:
+        return jsonify({"status": "error", "message": exc.message}), exc.status_code
+    except Exception:
+        return jsonify({"status": "error", "message": "copilot analysis failed"}), 500
+
+    return jsonify({"status": "ok", "result": result})
 
 
 @app.route("/api/incidents")

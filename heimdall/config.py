@@ -60,6 +60,14 @@ DEFAULT_CONFIG = {
     "slack_webhook_url": os.environ.get("SLACK_WEBHOOK_URL", ""),
     "slack_channel": os.environ.get("SLACK_CHANNEL", ""),
     "integration_min_priority": os.environ.get("INTEGRATION_MIN_PRIORITY", "medium"),
+    "copilot_provider": os.environ.get("COPILOT_PROVIDER", "local"),
+    "copilot_base_url": os.environ.get("COPILOT_BASE_URL", ""),
+    "copilot_api_key": os.environ.get("COPILOT_API_KEY", ""),
+    "copilot_model": os.environ.get("COPILOT_MODEL", "gpt-4o-mini"),
+    "copilot_timeout_seconds": int(os.environ.get("COPILOT_TIMEOUT_SECONDS", "20")),
+    "copilot_max_events": int(os.environ.get("COPILOT_MAX_EVENTS", "50")),
+    "copilot_max_bytes": int(os.environ.get("COPILOT_MAX_BYTES", "200000")),
+    "copilot_rate_limit_per_min": int(os.environ.get("COPILOT_RATE_LIMIT_PER_MIN", "30")),
 }
 
 ALERT_BUFFER_SIZE = 500

@@ -35,6 +35,11 @@ const eventsQueryInput = document.getElementById('eventsQueryInput');
 const runEventsQueryBtn = document.getElementById('runEventsQueryBtn');
 const clearEventsQueryBtn = document.getElementById('clearEventsQueryBtn');
 const eventsQueryStatus = document.getElementById('eventsQueryStatus');
+const selectAllEvents = document.getElementById('selectAllEvents');
+const runCopilotBtn = document.getElementById('runCopilotBtn');
+const copilotSelectedCount = document.getElementById('copilotSelectedCount');
+const copilotStatus = document.getElementById('copilotStatus');
+const copilotResults = document.getElementById('copilotResults');
 
 const rulesEditor = document.getElementById('rulesEditor');
 const rulesPathEl = document.getElementById('rulesPath');
@@ -75,6 +80,8 @@ let classificationChart = null;
 let hourlyChart = null;
 
 let currentEventsQuery = '';
+let selectedEventIds = new Set();
+let visibleEventIds = [];
 
 const chartPalette = ['#6ee7ff', '#a855f7', '#f97316', '#22c55e', '#facc15'];
 
@@ -434,26 +441,160 @@ function setEventsQueryStatus(message, isError = false) {
   eventsQueryStatus.classList.toggle('error', isError);
 }
 
+function setCopilotStatus(message, isError = false) {
+  if (!copilotStatus) return;
+  copilotStatus.textContent = message;
+  copilotStatus.classList.toggle('error', isError);
+}
+
+function updateCopilotSelectionUI() {
+  const count = selectedEventIds.size;
+  if (copilotSelectedCount) {
+    copilotSelectedCount.textContent = `${count} selected`;
+  }
+  if (runCopilotBtn) {
+    runCopilotBtn.disabled = count === 0;
+  }
+  if (selectAllEvents) {
+    const total = visibleEventIds.length;
+    const selectedVisible = visibleEventIds.filter(id => selectedEventIds.has(id)).length;
+    selectAllEvents.checked = total > 0 && selectedVisible === total;
+    selectAllEvents.indeterminate = selectedVisible > 0 && selectedVisible < total;
+  }
+}
+
+function renderCopilotResults(result) {
+  if (!copilotResults) return;
+  copilotResults.innerHTML = '';
+  if (!result) return;
+
+  const severity = result.severity || {};
+  const mitre = Array.isArray(result.mitre) ? result.mitre : [];
+  const bounded = result.boundedness || {};
+
+  const summary = document.createElement('div');
+  summary.className = 'copilot-summary';
+  const score = document.createElement('div');
+  score.className = 'copilot-score';
+  const scoreValue = severity.score !== undefined ? severity.score : '-';
+  const scoreLabel = severity.label ? String(severity.label).toUpperCase() : 'UNKNOWN';
+  score.textContent = `${scoreLabel} • ${scoreValue}`;
+  summary.appendChild(score);
+  copilotResults.appendChild(summary);
+
+  const severityBlock = document.createElement('div');
+  severityBlock.className = 'copilot-block';
+  const severityTitle = document.createElement('div');
+  severityTitle.className = 'copilot-block-title';
+  severityTitle.textContent = 'Severity reasoning';
+  severityBlock.appendChild(severityTitle);
+  const severityList = document.createElement('ul');
+  severityList.className = 'copilot-list';
+  (severity.reasons || []).forEach(reason => {
+    const li = document.createElement('li');
+    li.textContent = reason;
+    severityList.appendChild(li);
+  });
+  if (!severityList.childElementCount) {
+    const li = document.createElement('li');
+    li.textContent = 'No reasoning provided.';
+    severityList.appendChild(li);
+  }
+  severityBlock.appendChild(severityList);
+  copilotResults.appendChild(severityBlock);
+
+  const mitreBlock = document.createElement('div');
+  mitreBlock.className = 'copilot-block';
+  const mitreTitle = document.createElement('div');
+  mitreTitle.className = 'copilot-block-title';
+  mitreTitle.textContent = 'MITRE ATT&CK mapping';
+  mitreBlock.appendChild(mitreTitle);
+  if (!mitre.length) {
+    const empty = document.createElement('div');
+    empty.className = 'copilot-empty';
+    empty.textContent = 'No MITRE mapping returned.';
+    mitreBlock.appendChild(empty);
+  } else {
+    mitre.forEach(item => {
+      const entry = document.createElement('div');
+      entry.className = 'copilot-mitre-item';
+      const heading = document.createElement('div');
+      heading.className = 'copilot-mitre-title';
+      heading.textContent = `${item.tactic || '-'} • ${item.technique || '-'} (${item.technique_id || '-'})`;
+      entry.appendChild(heading);
+      const reasons = document.createElement('ul');
+      reasons.className = 'copilot-list';
+      (item.reasons || []).forEach(reason => {
+        const li = document.createElement('li');
+        li.textContent = reason;
+        reasons.appendChild(li);
+      });
+      if (!reasons.childElementCount) {
+        const li = document.createElement('li');
+        li.textContent = 'No reasoning provided.';
+        reasons.appendChild(li);
+      }
+      entry.appendChild(reasons);
+      mitreBlock.appendChild(entry);
+    });
+  }
+  copilotResults.appendChild(mitreBlock);
+
+  const evidenceBlock = document.createElement('div');
+  evidenceBlock.className = 'copilot-block';
+  const evidenceTitle = document.createElement('div');
+  evidenceTitle.className = 'copilot-block-title';
+  evidenceTitle.textContent = 'Evidence used';
+  evidenceBlock.appendChild(evidenceTitle);
+  const evidenceNote = document.createElement('div');
+  evidenceNote.className = 'copilot-evidence';
+  const evidenceIds = Array.isArray(bounded.evidence_ids) ? bounded.evidence_ids : [];
+  const noteText = bounded.notes || 'Only the selected evidence was used.';
+  evidenceNote.textContent = `${noteText} (${evidenceIds.length} events)`;
+  evidenceBlock.appendChild(evidenceNote);
+  copilotResults.appendChild(evidenceBlock);
+}
+
 function renderEvents(events) {
   if (!eventsTableBody) return;
   eventsTableBody.innerHTML = '';
   eventCountEl.textContent = events.length;
+  visibleEventIds = [];
+  const nextSelected = new Set();
   if (!events.length) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 6;
+    cell.colSpan = 7;
     cell.textContent = 'No events available.';
     row.appendChild(cell);
     eventsTableBody.appendChild(row);
+    selectedEventIds = nextSelected;
+    updateCopilotSelectionUI();
     return;
   }
 
   events.forEach(event => {
+    const eventId = event.event_id ? String(event.event_id) : '';
+    if (eventId) {
+      visibleEventIds.push(eventId);
+      if (selectedEventIds.has(eventId)) {
+        nextSelected.add(eventId);
+      }
+    }
     const row = document.createElement('tr');
     const source = formatEndpoint(event.source);
     const destination = formatEndpoint(event.destination);
 
     row.innerHTML = `
+      <td class="select-cell">
+        <input
+          type="checkbox"
+          class="event-select"
+          data-event-id="${eventId}"
+          ${eventId && selectedEventIds.has(eventId) ? 'checked' : ''}
+          ${eventId ? '' : 'disabled'}
+        />
+      </td>
       <td>${event.timestamp || '-'}</td>
       <td>${event?.event?.severity ?? '-'}</td>
       <td>${event?.alert?.signature || '-'}</td>
@@ -463,6 +604,9 @@ function renderEvents(events) {
     `;
     eventsTableBody.appendChild(row);
   });
+
+  selectedEventIds = nextSelected;
+  updateCopilotSelectionUI();
 }
 
 function renderIncidents(incidents) {
@@ -543,6 +687,35 @@ async function fetchIncidents() {
     renderIncidents(data.incidents || []);
   } catch (err) {
     // ignore
+  }
+}
+
+async function runCopilot() {
+  const eventIds = Array.from(selectedEventIds);
+  if (!eventIds.length) {
+    setCopilotStatus('Select events to run analysis.', true);
+    return;
+  }
+  setCopilotStatus('Running copilot analysis...');
+  if (copilotResults) copilotResults.innerHTML = '';
+  if (runCopilotBtn) runCopilotBtn.disabled = true;
+  try {
+    const res = await authFetch('/api/copilot/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_ids: eventIds }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setCopilotStatus(data.message || 'Copilot analysis failed.', true);
+      return;
+    }
+    renderCopilotResults(data.result || null);
+    setCopilotStatus('Analysis complete.');
+  } catch (err) {
+    setCopilotStatus('Copilot request failed.', true);
+  } finally {
+    updateCopilotSelectionUI();
   }
 }
 
@@ -914,12 +1087,53 @@ if (eventsQueryInput) {
   });
 }
 
+if (eventsTableBody) {
+  eventsTableBody.addEventListener('change', event => {
+    const checkbox = event.target.closest('input.event-select');
+    if (!checkbox) return;
+    const eventId = checkbox.dataset.eventId;
+    if (!eventId) return;
+    if (checkbox.checked) {
+      selectedEventIds.add(eventId);
+    } else {
+      selectedEventIds.delete(eventId);
+    }
+    updateCopilotSelectionUI();
+  });
+}
+
+if (selectAllEvents) {
+  selectAllEvents.addEventListener('change', event => {
+    const checked = event.target.checked;
+    visibleEventIds.forEach(eventId => {
+      if (checked) {
+        selectedEventIds.add(eventId);
+      } else {
+        selectedEventIds.delete(eventId);
+      }
+    });
+    const checkboxes = eventsTableBody?.querySelectorAll('input.event-select') || [];
+    checkboxes.forEach(input => {
+      if (!input.disabled) {
+        input.checked = checked;
+      }
+    });
+    updateCopilotSelectionUI();
+  });
+}
+
 if (incidentsTableBody) {
   incidentsTableBody.addEventListener('click', event => {
     const button = event.target.closest('button[data-incident]');
     if (!button) return;
     const incidentId = button.dataset.incident;
     closeIncident(incidentId);
+  });
+}
+
+if (runCopilotBtn) {
+  runCopilotBtn.addEventListener('click', () => {
+    runCopilot();
   });
 }
 
