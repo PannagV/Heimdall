@@ -1,3 +1,17 @@
+Suspend active development pending IP clarification
+
+Work on this project is suspended during internship period 
+pending written clarification from employer regarding 
+intellectual property ownership and scope of internship duties.
+
+Development will resume once:
+- Written confirmation is received that this project is outside the scope of internship IP assignment
+- Or employment relationship concludes
+
+Last active development: 30/05/2026
+Resume date: TBD
+
+
 # Project Heimdall
 
 Heimdall is a Linux-based SIEM focused on collecting Suricata network security events, normalizing them into a consistent JSON format, and storing them in MongoDB for search, dashboards, and incident workflows.
